@@ -1,3 +1,5 @@
+use std::{cell::RefCell, collections::HashSet, rc::Rc};
+
 use helpers::{read_grid, Puzzle};
 
 fn main() {
@@ -41,6 +43,24 @@ impl Direction {
         false
     }
 
+    fn matches(&self, space: &Space) -> Option<SpaceInfo> {
+        match space {
+            Space::Visited(space_info) => {
+                if space_info.travel_direction == *self {
+                    Some(space_info.clone())
+                } else {
+                    None
+                }
+            }
+            Space::Intersection(space_infos) => space_infos
+                .iter()
+                .find(|space_info| space_info.travel_direction == *self)
+                .map(|space_info| space_info.clone()),
+            Space::Empty => None,
+            Space::Obstacle => panic!("Can't compare a direction with an obstacle space"),
+        }
+    }
+
     fn turn(self) -> Self {
         match self {
             Direction::Up => Direction::Right,
@@ -68,7 +88,7 @@ impl Direction {
                 }
             }
             Direction::Right => {
-                if *col == grid[*row].len() {
+                if *col == grid[*row].len() - 1 {
                     return true;
                 }
             }
@@ -84,24 +104,31 @@ impl Direction {
             Direction::Right => *col += 1,
         }
     }
+
+    fn peek_update_pos(&self, row: &usize, col: &usize) -> (usize, usize) {
+        match &self {
+            Direction::Up => (*row - 1, *col),
+            Direction::Down => (*row + 1, *col),
+            Direction::Left => (*row, *col - 1),
+            Direction::Right => (*row, *col + 1),
+        }
+    }
 }
 
-fn find_exit(
+fn traverse_grid(
     start_pos: (usize, usize),
+    start_direction: Direction,
     grid: &mut Vec<Vec<Space>>,
-    mut update_fn: impl FnMut(&mut Space, Direction),
+    mut should_continue_fn: impl FnMut(&Vec<Vec<Space>>, (&usize, &usize), &Direction) -> bool,
+    mut update_fn: impl FnMut(&mut Vec<Vec<Space>>, (usize, usize), Direction),
 ) {
     let (mut curr_r, mut curr_c) = start_pos;
-    let mut curr_direction = Direction::Up;
+    let mut curr_direction = start_direction.clone();
 
-    while !curr_direction.is_exiting(&grid, &curr_r, &curr_c) {
-        // println!(
-        //     "(curr_r, curr_c, char): ({curr_r}, {curr_c}, {}",
-        //     grid[curr_r][curr_c]
-        // );
-        update_fn(&mut grid[curr_r][curr_c], curr_direction.clone());
+    while should_continue_fn(grid, (&curr_r, &curr_c), &curr_direction) {
+        update_fn(grid, (curr_r, curr_c), curr_direction.clone());
 
-        if curr_direction.should_turn(&grid, &curr_r, &curr_c) {
+        while curr_direction.should_turn(&grid, &curr_r, &curr_c) {
             curr_direction = curr_direction.turn();
         }
 
@@ -109,23 +136,53 @@ fn find_exit(
     }
 }
 
+fn is_exiting(
+    grid: &Vec<Vec<Space>>,
+    coords: (&usize, &usize),
+    curr_direction: &Direction,
+) -> bool {
+    !curr_direction.is_exiting(grid, coords.0, coords.1)
+}
+
+fn noop_update_fn(grid: &mut Vec<Vec<Space>>, coords: (usize, usize), direction: Direction) {}
+
+fn mark_path_to_exit(
+    start_pos: (usize, usize),
+    grid: &mut Vec<Vec<Space>>,
+) -> (i64, &mut Vec<Vec<Space>>) {
+    // Have to start at 1 cause the final location won't be marked
+    let mut spaces_covered = 1;
+    let update_fn =
+        |grid: &mut Vec<Vec<Space>>, coords: (usize, usize), curr_direction: Direction| {
+            let space_val = &mut grid[coords.0][coords.1];
+            let new_space_info = SpaceInfo {
+                travel_direction: curr_direction.clone(),
+                count: spaces_covered,
+            };
+            spaces_covered += 1;
+            match space_val {
+                Space::Empty => {
+                    *space_val = Space::Visited(new_space_info);
+                }
+                Space::Visited(space_info) => {
+                    let space_infos = vec![space_info.clone(), new_space_info];
+                    *space_val = Space::Intersection(space_infos)
+                }
+                Space::Intersection(space_infos) => space_infos.push(new_space_info),
+                Space::Obstacle => panic!("Can't be 'on' an obstacle while marking the path"),
+            }
+        };
+
+    traverse_grid(start_pos, Direction::Up, grid, is_exiting, update_fn);
+
+    (spaces_covered, grid)
+}
+
 impl Puzzle for Day6 {
     fn puzzle_1(contents: String) {
         let (mut space_grid, start_pos) = build_space_grid(contents);
 
-        // Have to start at 1 cause the final location won't be marked
-        let mut spaces_covered = 1;
-        let update_fn = |space_val: &mut Space, curr_direction: Direction| {
-            if let Space::Empty = space_val {
-                *space_val = Space::Visited(SpaceInfo {
-                    travel_direction: curr_direction.clone(),
-                    count: spaces_covered,
-                });
-                spaces_covered += 1;
-            }
-        };
-
-        find_exit(start_pos, &mut space_grid, update_fn);
+        let (spaces_covered, _) = mark_path_to_exit(start_pos, &mut space_grid);
 
         //println!("Final grid: {:?}", space_grid);
 
@@ -147,22 +204,108 @@ impl Puzzle for Day6 {
     fn puzzle_2(contents: String) {
         let (mut grid, start_pos) = build_space_grid(contents);
 
-        // Have to start at 1 cause the final location won't be marked
-        let mut spaces_covered = 1;
-        let update_fn = |space_val: &mut Space, curr_direction: Direction| {
-            if let Space::Empty = space_val {
-                *space_val = Space::Visited(SpaceInfo {
-                    travel_direction: curr_direction.clone(),
-                    count: spaces_covered,
-                });
-                spaces_covered += 1;
+        let (final_count, grid) = mark_path_to_exit(start_pos, &mut grid);
+
+        let mut loops_found = 0;
+        let find_loops_fn = |grid: &mut Vec<Vec<Space>>,
+                             starting_coords: (usize, usize),
+                             curr_direction: Direction| {
+            let (starting_row, starting_col) = starting_coords;
+
+            let starting_count = match &grid[starting_row][starting_col] {
+                Space::Visited(space_info) => space_info.count,
+                Space::Intersection(space_infos) => space_infos
+                    .iter()
+                    .find(|space_info| space_info.travel_direction == curr_direction)
+                    .map(|space_info| space_info.count)
+                    .expect("at least one has to match"),
+                _ => panic!("Space has to have been visited on the second traversal"),
+            };
+
+            let peek_pos = curr_direction.peek_update_pos(&starting_row, &starting_col);
+            match &grid[peek_pos.0][peek_pos.1] {
+                Space::Obstacle => return,
+                Space::Intersection(space_infos) => {
+                    if space_infos
+                        .iter()
+                        .map(|space_info| space_info.count)
+                        .min()
+                        .expect("has to be of length 1")
+                        < starting_count
+                    {
+                        println!("skipping starting point ({starting_row}, {starting_col})");
+                        return;
+                    }
+                }
+                _ => {}
             }
+
+            // turn to consider the possibility where we're actually moving into a new space
+            let mut turned_direction = curr_direction.turn();
+            while turned_direction.should_turn(grid, &starting_row, &starting_col) {
+                turned_direction = turned_direction.turn();
+            }
+
+            let mut new_spaces_count = final_count + 1;
+            let stop_searching = Rc::new(RefCell::new(false));
+            let find_loop_should_continue_fn =
+                |grid: &Vec<Vec<Space>>, coords: (&usize, &usize), direction: &Direction| {
+                    !(*stop_searching.borrow()) && !direction.is_exiting(grid, coords.0, coords.1)
+                };
+            let find_loop_update_fn =
+                |grid: &mut Vec<Vec<Space>>,
+                 inner_coords: (usize, usize),
+                 inner_direction: Direction| {
+                    let (row, col) = inner_coords;
+
+                    let space = &grid[row][col];
+                    //println!("Debugging: ({row}, {col}) with starting pos ({starting_row}, {starting_col})");
+                    if let Some(space_info) = inner_direction.matches(space) {
+                        let match_count = space_info.count;
+                        // If we've hit a previously visited space in the same direction, make sure
+                        // it happened our starting point and not after it
+                        if match_count <= starting_count || match_count >= final_count + 1 {
+                            println!("Loop discovered at ({row}, {col}) for starting position ({starting_row}, {starting_col})");
+                            loops_found += 1;
+                            let mut stop_searching_mut = stop_searching.borrow_mut();
+                            *stop_searching_mut = true;
+                            return;
+                        } //else {
+                          // println!("Found matched direction with missing intersection at ({row}, {col}) for starting positino ({starting_row}, {starting_col}): starting_count - {starting_count} and intersection_count - {match_count} and final_count + 1 {}", final_count + 1);
+                          //}
+                    }
+                    let space = &mut grid[row][col];
+                    let new_space_info = SpaceInfo {
+                        travel_direction: inner_direction,
+                        count: new_spaces_count,
+                    };
+                    match space {
+                        Space::Visited(space_info) => {
+                            let space_infos = vec![space_info.clone(), new_space_info];
+                            *space = Space::Intersection(space_infos);
+                        }
+                        Space::Intersection(space_infos) => {
+                            space_infos.push(new_space_info);
+                        }
+                        Space::Empty => {
+                            *space = Space::Visited(new_space_info);
+                        }
+                        Space::Obstacle => panic!("Shouldn't be able to be 'on' an obstacle here"),
+                    };
+                    new_spaces_count += 1;
+                };
+            // TODO: See if there's a way to more cheaply clone grid here
+            traverse_grid(
+                starting_coords,
+                turned_direction,
+                &mut grid.clone(),
+                find_loop_should_continue_fn,
+                find_loop_update_fn,
+            );
         };
+        traverse_grid(start_pos, Direction::Up, grid, is_exiting, find_loops_fn);
 
-        find_exit(start_pos.clone(), &mut grid, update_fn);
-
-        // TODO TODO TODO: Need to do the second trace through at this point looking for places to
-        // stop. Just need to implement as another FnMut
+        println!("number of ways to create a loop: {loops_found}");
     }
 }
 
@@ -190,14 +333,15 @@ fn build_space_grid(contents: String) -> (Vec<Vec<Space>>, (usize, usize)) {
     (grid, start_pos)
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Clone)]
 enum Space {
     Empty,
     Visited(SpaceInfo),
+    Intersection(Vec<SpaceInfo>),
     Obstacle,
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Clone)]
 struct SpaceInfo {
     travel_direction: Direction,
     count: i64,
