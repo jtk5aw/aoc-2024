@@ -210,6 +210,7 @@ impl Puzzle for Day6 {
         let find_loops_fn = |grid: &mut Vec<Vec<Space>>,
                              starting_coords: (usize, usize),
                              curr_direction: Direction| {
+            let grid = &mut grid.clone();
             let (starting_row, starting_col) = starting_coords;
 
             let starting_count = match &grid[starting_row][starting_col] {
@@ -239,13 +240,8 @@ impl Puzzle for Day6 {
                 }
                 _ => {}
             }
-
-            // turn to consider the possibility where we're actually moving into a new space
-            let mut turned_direction = curr_direction.turn();
-            while turned_direction.should_turn(grid, &starting_row, &starting_col) {
-                turned_direction = turned_direction.turn();
-            }
-
+            let new_obstacle_space = &mut grid[peek_pos.0][peek_pos.1];
+            *new_obstacle_space = Space::Obstacle;
             let mut new_spaces_count = final_count + 1;
             let stop_searching = Rc::new(RefCell::new(false));
             let find_loop_should_continue_fn =
@@ -257,6 +253,9 @@ impl Puzzle for Day6 {
                  inner_coords: (usize, usize),
                  inner_direction: Direction| {
                     let (row, col) = inner_coords;
+                    if row == starting_row && col == starting_col {
+                        return;
+                    }
 
                     let space = &grid[row][col];
                     //println!("Debugging: ({row}, {col}) with starting pos ({starting_row}, {starting_col})");
@@ -297,7 +296,7 @@ impl Puzzle for Day6 {
             // TODO: See if there's a way to more cheaply clone grid here
             traverse_grid(
                 starting_coords,
-                turned_direction,
+                curr_direction,
                 &mut grid.clone(),
                 find_loop_should_continue_fn,
                 find_loop_update_fn,
