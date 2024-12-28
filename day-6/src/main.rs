@@ -186,8 +186,6 @@ impl Puzzle for Day6 {
 
         let (spaces_covered, _, _) = mark_path_to_exit(start_pos, &mut space_grid);
 
-        //println!("Final grid: {:?}", space_grid);
-
         println!("Number of spaces covered: {spaces_covered}");
     }
 
@@ -233,7 +231,6 @@ impl Puzzle for Day6 {
                 Space::Obstacle => return,
                 Space::Visited(space_info) => {
                     if space_info.count < starting_count {
-                        println!("!!!!!!");
                         return;
                     }
                 }
@@ -243,7 +240,6 @@ impl Puzzle for Day6 {
                         .find(|space_info| space_info.count < starting_count)
                         .is_some()
                     {
-                        println!("!!!!!!");
                         return;
                     }
                 }
@@ -256,18 +252,6 @@ impl Puzzle for Day6 {
             let new_spaces_count = Rc::new(RefCell::new(final_count));
             let find_loop_should_continue_fn =
                 |grid: &Vec<Vec<Space>>, coords: (&usize, &usize), direction: &Direction| {
-                    // println!(
-                    //     "Debugging in should_continue: ({},{}), count: {}",
-                    //     coords.0,
-                    //     coords.1,
-                    //     new_spaces_count.borrow()
-                    // );
-                    // TODO TODO TODO: Need to make sure don't automatically match on the first
-                    // space every time
-                    // TODO TODO TODO: Do all the checking for collisions in the should continue fn
-                    // instead of in the update fn (probably need to put new_spaces_count in a
-                    // Rc(RefCell()) too cause I think I'll need to check it here
-
                     let is_exiting = direction.is_exiting(grid, coords.0, coords.1);
 
                     // Fist square will always match but we don't care about this, quit
@@ -277,7 +261,6 @@ impl Puzzle for Day6 {
                     if let Some(space_info) = direction.matches(&grid[*coords.0][*coords.1]) {
                         if space_info.count < starting_count || space_info.count > final_count {
                             loops_found += 1;
-                            // println!("loop found!: ({starting_row}, {starting_col})");
                             return false;
                         }
                     }
@@ -288,12 +271,6 @@ impl Puzzle for Day6 {
                 |grid: &mut Vec<Vec<Space>>,
                  inner_coords: (usize, usize),
                  inner_direction: Direction| {
-                    // println!(
-                    //     "Debugging in update: ({},{}), count: {}",
-                    //     inner_coords.0,
-                    //     inner_coords.1,
-                    //     new_spaces_count.borrow()
-                    // );
                     let (row, col) = inner_coords;
 
                     // TODO: Determine if its best practice to underscore this like this
