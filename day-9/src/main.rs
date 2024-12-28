@@ -88,6 +88,7 @@ impl Puzzle for Day9 {
         let mut final_file_idx = 0;
         let mut front_file_idx = 0;
 
+        println!("{:?}", files);
         while front_file_idx < files.len() {
             if file_drained[front_file_idx] {
                 final_file_idx += files[front_file_idx];
@@ -99,11 +100,10 @@ impl Puzzle for Day9 {
                         final_file_idx += 1;
                     });
             }
-            front_file_idx += 1;
 
             if 0 < gaps.len() {
                 let mut gap_len = gaps.remove(0);
-                for idx in (0..files.len()).rev() {
+                for idx in (front_file_idx + 1..files.len()).rev() {
                     if !file_drained[idx] && files[idx] <= gap_len {
                         iter::repeat(idx).take(files[idx]).for_each(|val| {
                             final_file[final_file_idx] = val;
@@ -115,6 +115,8 @@ impl Puzzle for Day9 {
                 }
                 final_file_idx += gap_len;
             }
+
+            front_file_idx += 1;
         }
 
         println!("{:?}", final_file);
