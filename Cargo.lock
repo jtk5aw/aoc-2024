@@ -62,6 +62,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "day-7"
+version = "0.1.0"
+dependencies = [
+ "helpers",
+]
+
+[[package]]
+name = "day-8"
+version = "0.1.0"
+dependencies = [
+ "helpers",
+]
+
+[[package]]
+name = "day-8-copied"
+version = "0.1.0"
+dependencies = [
+ "gcd",
+ "helpers",
+]
+
+[[package]]
+name = "gcd"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d758ba1b47b00caf47f24925c0074ecb20d6dfcffe7f6d53395c0465674841a"
+
+[[package]]
 name = "helpers"
 version = "0.1.0"
 
