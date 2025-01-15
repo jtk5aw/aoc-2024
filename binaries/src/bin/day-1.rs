@@ -1,5 +1,3 @@
-mod day-14;
-
 use std::{collections::HashMap, env, fs};
 
 use helpers::Puzzle;

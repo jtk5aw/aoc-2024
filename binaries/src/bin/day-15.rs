@@ -1,4 +1,4 @@
-use std::{borrow::BorrowMut, collections::HashSet};
+use std::collections::HashSet;
 
 use helpers::{read_grid, Puzzle};
 
@@ -214,77 +214,6 @@ impl Iterator for CoordSearcher {
     }
 }
 
-struct WideCoordSearcher {
-    current_coords_list: Option<Vec<(usize, usize)>>,
-    seen_target: bool,
-    searchers: Vec<CoordSearcher>,
-}
-
-impl WideCoordSearcher {
-    fn try_new(
-        start_coords_list: Vec<(usize, usize)>,
-        target_coords: (usize, usize),
-        direction: Direction,
-    ) -> Result<Self, ()> {
-        if start_coords_list.len() > 1 && !direction.is_vertical() {
-            println!(
-                "Should not have start_coords_list of multiple elements if direction is vertical"
-            );
-            return Err(());
-        }
-        let searchers = start_coords_list
-            .iter()
-            .flat_map(|start_coords| {
-                CoordSearcher::try_new(*start_coords, target_coords, direction.clone())
-            })
-            .collect::<Vec<_>>();
-        if searchers.len() != start_coords_list.len() {
-            println!("failed to create one of the coord searchers");
-            return Err(());
-        }
-        Ok(Self {
-            current_coords_list: Some(start_coords_list),
-            seen_target: false,
-            searchers,
-        })
-    }
-}
-
-// This assumes that one of the associated searchers was set up properly i.e will actually hit its
-// target coord. Otherwise this may go on infinitely
-impl Iterator for WideCoordSearcher {
-    type Item = (Vec<(usize, usize)>, bool);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let current = self
-            .current_coords_list
-            .clone()
-            .map(|coords| (coords, self.seen_target));
-
-        if let Some(_) = current {
-            let potential_coords_list = self
-                .searchers
-                .iter_mut()
-                .flat_map(|searcher| searcher.next())
-                .map(|(coords, is_target)| {
-                    if is_target {
-                        self.seen_target = true;
-                    }
-                    coords
-                })
-                .collect::<Vec<_>>();
-
-            self.current_coords_list = if potential_coords_list.len() != self.searchers.len() {
-                None
-            } else {
-                Some(potential_coords_list)
-            }
-        }
-
-        current
-    }
-}
-
 struct EdgeSearcher<'a, T: IsEdge> {
     current_coords: Option<(usize, usize)>,
     direction: Direction,
@@ -325,6 +254,19 @@ struct EdgeSearcherWithTombstone<'a> {
     is_tombstoned: bool,
 }
 
+impl<'a> EdgeSearcherWithTombstone<'a> {
+    fn new(searcher: EdgeSearcher<'a, DoubleSpace>) -> Self {
+        EdgeSearcherWithTombstone {
+            searcher,
+            is_tombstoned: false,
+        }
+    }
+
+    fn tombstone(&mut self) {
+        self.is_tombstoned = true;
+    }
+}
+
 struct WideningEdgeSearcher<'a> {
     current_coords_list: Option<HashSet<(usize, usize)>>,
     found_coords: HashSet<(usize, usize)>,
@@ -339,10 +281,11 @@ impl<'a> WideningEdgeSearcher<'a> {
         direction: Direction,
         grid: &'a Vec<Vec<DoubleSpace>>,
     ) -> Self {
-        let mut searcher = EdgeSearcherWithTombstone {
-            searcher: EdgeSearcher::new(start_coords, direction.clone(), grid),
-            is_tombstoned: false,
-        };
+        let mut searcher = EdgeSearcherWithTombstone::new(EdgeSearcher::new(
+            start_coords,
+            direction.clone(),
+            grid,
+        ));
         // Makes it so the first space isn't returned twice
         searcher.searcher.next();
         Self {
@@ -363,30 +306,14 @@ impl<'a> Iterator for WideningEdgeSearcher<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let current = self.current_coords_list.clone();
-        println!(
-            "current is: {:?}",
-            current.clone().map(|val| {
-                let mut val = Vec::from_iter(val);
-                val.sort();
-                val
-            })
-        );
 
         if let Some(_) = current.as_ref() {
             let potential_coords_list = self
                 .searchers
                 .iter_mut()
                 .enumerate()
-                .flat_map(|(idx, searcher)| {
-                    //print!("continue_searching: {}, ", searcher.continue_searching);
-                    searcher.searcher.next().map(|val| (idx, val))
-                })
+                .flat_map(|(idx, searcher)| searcher.searcher.next().map(|val| (idx, val)))
                 .collect::<Vec<_>>();
-            //println!();
-            println!(
-                "potential_coords_list size: {}",
-                potential_coords_list.len()
-            );
 
             self.current_coords_list = if potential_coords_list.len() != self.searchers.len() {
                 None
@@ -403,31 +330,25 @@ impl<'a> Iterator for WideningEdgeSearcher<'a> {
                     ) {
                         (DoubleSpace::Empty, _) => {
                             self.found_coords.insert(potential_coords);
-                            self.searchers[searcher_idx].is_tombstoned = true;
+                            self.searchers[searcher_idx].tombstone();
                         }
                         (DoubleSpace::LeftBox, true) => {
-                            println!("adding from: idx: {searcher_idx}");
                             let added_coord = (potential_coords.0, potential_coords.1 + 1);
                             let mut new_edge_searcher =
                                 EdgeSearcher::new(added_coord, self.direction.clone(), self.grid);
                             new_coords
                                 .push(new_edge_searcher.next().expect("first next has to be Some"));
-                            self.searchers.push(EdgeSearcherWithTombstone {
-                                searcher: new_edge_searcher,
-                                is_tombstoned: false,
-                            });
+                            self.searchers
+                                .push(EdgeSearcherWithTombstone::new(new_edge_searcher));
                         }
                         (DoubleSpace::RightBox, true) => {
-                            println!("adding from: idx: {searcher_idx}",);
                             let added_coord = (potential_coords.0, potential_coords.1 - 1);
                             let mut new_edge_searcher =
                                 EdgeSearcher::new(added_coord, self.direction.clone(), self.grid);
                             new_coords
                                 .push(new_edge_searcher.next().expect("first next has to be Some"));
-                            self.searchers.push(EdgeSearcherWithTombstone {
-                                searcher: new_edge_searcher,
-                                is_tombstoned: false,
-                            });
+                            self.searchers
+                                .push(EdgeSearcherWithTombstone::new(new_edge_searcher));
                         }
                         (_, _) => {}
                     }
@@ -442,8 +363,6 @@ impl<'a> Iterator for WideningEdgeSearcher<'a> {
         current
     }
 }
-
-// TODO TODO TODO: Clean up the printlns and see how fast this runs, try and get it managable
 
 fn get_moves(row_iter: impl Iterator<Item = char>) -> Vec<Direction> {
     row_iter
@@ -540,7 +459,6 @@ fn boxes_to_move(
     // Skip the first robot space
     widening_searcher_iter.next();
     while let Some(coords_list) = widening_searcher_iter.next() {
-        println!("coords_list: {:?}", coords_list);
         let mut all_empty = true;
         for coords in coords_list {
             match &grid[coords.0][coords.1] {
@@ -578,13 +496,12 @@ fn run_sim(start_coords: (usize, usize), moves: Vec<Direction>, grid: &mut Vec<V
     let mut curr_coords = start_coords;
 
     for next_move in moves {
-        println!("Current move is: {:?}", next_move);
-        print_grid(grid.clone());
+        //println!("Current move is: {:?}", next_move);
+        //print_grid(grid.clone());
 
         let empty_space = find_empty_space(curr_coords, next_move.clone(), &grid);
 
         if let Some(mut move_into_coords) = empty_space {
-            println!("move_into_coords: {:?}", move_into_coords);
             let mut coord_searcher = CoordSearcher::try_new(
                 move_into_coords,
                 curr_coords,
@@ -593,14 +510,6 @@ fn run_sim(start_coords: (usize, usize), moves: Vec<Direction>, grid: &mut Vec<V
             .expect("starting point must be reachable after reversing direction")
             .into_iter();
             while let Some((move_coords, _is_target)) = coord_searcher.next() {
-                // println!(
-                //     "Currently going: {:?} to ({}, {}), ({}, {})",
-                //     coord_searcher.direction,
-                //     coord_searcher.target_coords.0,
-                //     coord_searcher.target_coords.1,
-                //     move_coords.0,
-                //     move_coords.1
-                // );
                 grid[move_into_coords.0][move_into_coords.1] =
                     grid[move_coords.0][move_coords.1].clone();
 
@@ -619,13 +528,9 @@ fn run_sim_2(
 ) {
     let mut curr_coords = start_coords;
 
-    //println!("number of moves: {}", moves.len());
-    let mut i = 0;
     for next_move in moves {
         //println!("Current move is: {:?}", next_move);
-        println!("{i}");
-        i += 1;
-        print_grid(grid.clone());
+        //print_grid(grid.clone());
 
         let boxes_to_move_opt = boxes_to_move(curr_coords, next_move.clone(), &grid);
 
@@ -652,7 +557,7 @@ fn run_sim_2(
             grid[curr_coords.0][curr_coords.1] = DoubleSpace::Robot;
         }
     }
-    print_grid(grid.clone());
+    //print_grid(grid.clone());
 }
 
 fn get_score<T: Scorable>(grid: Vec<Vec<T>>) -> usize {
