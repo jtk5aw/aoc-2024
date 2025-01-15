@@ -23,9 +23,9 @@ impl Direction {
             return None;
         }
         if self.eq(&other) {
-            return Some(0);
+            return Some(1);
         }
-        return Some(1000);
+        return Some(1001);
     }
 
     fn is_reverse(&self, other: &Direction) -> bool {
@@ -49,10 +49,10 @@ impl Direction {
 
     fn is_open(&self, coord: &Coord, grid: &Vec<Vec<char>>) -> bool {
         match self {
-            Direction::Up if grid[coord.0 - 1][coord.1] == '.' => true,
-            Direction::Down if grid[coord.0 + 1][coord.1] == '.' => true,
-            Direction::Right if grid[coord.0][coord.1 + 1] == '.' => true,
-            Direction::Left if grid[coord.0][coord.1 - 1] == '.' => true,
+            Direction::Up if grid[coord.0 - 1][coord.1] != '#' => true,
+            Direction::Down if grid[coord.0 + 1][coord.1] != '#' => true,
+            Direction::Right if grid[coord.0][coord.1 + 1] != '#' => true,
+            Direction::Left if grid[coord.0][coord.1 - 1] != '#' => true,
             _ => false,
         }
     }
@@ -139,25 +139,43 @@ struct Graph {
 }
 
 #[derive(Eq, PartialEq, Hash, Debug, Clone)]
-struct HeapNode<T: Hash + Ord> {
+struct HeapNode<T, H>
+where
+    T: Hash + Ord,
+    H: Hash + Ord,
+{
     priority: usize,
     value: T,
+    history: Vec<H>,
 }
 
-impl<T: Eq + PartialEq + Hash + Ord> HeapNode<T> {
+impl<T, H> HeapNode<T, H>
+where
+    T: Eq + PartialEq + Hash + Ord,
+    H: Eq + PartialEq + Hash + Ord,
+{
     fn new(value: T) -> Self {
         HeapNode {
             priority: usize::MAX,
             value,
+            history: Vec::new(),
         }
     }
 
-    fn with_priority(value: T, priority: usize) -> Self {
-        HeapNode { priority, value }
+    fn with_priority(value: T, priority: usize, history: Vec<H>) -> Self {
+        HeapNode {
+            priority,
+            value,
+            history,
+        }
     }
 }
 
-impl<T: Hash + Eq + Ord> Ord for HeapNode<T> {
+impl<T, H> Ord for HeapNode<T, H>
+where
+    T: Hash + Eq + Ord,
+    H: Hash + Eq + Ord,
+{
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         // Flips ordering for min-heap
         other
@@ -167,50 +185,52 @@ impl<T: Hash + Eq + Ord> Ord for HeapNode<T> {
     }
 }
 
-impl<T: Hash + Eq + Ord> PartialOrd for HeapNode<T> {
+impl<T, H> PartialOrd for HeapNode<T, H>
+where
+    T: Hash + Eq + Ord,
+    H: Hash + Eq + Ord,
+{
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Graph {
-    fn init_key(&mut self, key: DirectionalCoord) {
-        match self.edges.get(&key) {
-            Some(_) => panic!("never call init key when values already exist"),
-            None => {
-                self.edges.insert(key, Vec::new());
-            }
+    fn init_key(&mut self, key: DirectionalCoord) -> bool {
+        if let Some(_) = self.edges.get(&key) {
+            return false;
         }
+        self.edges.insert(key, Vec::new());
+        true
     }
 
     fn add_edge(&mut self, key: DirectionalCoord, edge: Edge) {
         self.edges.entry(key).or_insert_with(Vec::new).push(edge);
     }
 
-    fn shortest_path(self, grid: Vec<Vec<char>>) -> usize {
+    fn shortest_path(self, grid: Vec<Vec<char>>) -> (usize, HashSet<Coord>) {
         let mut unvisited = BinaryHeap::new();
         for key in self.edges.keys() {
             if key.0 == self.start {
-                unvisited.push(HeapNode::with_priority(key.clone(), 0));
+                unvisited.push(HeapNode::with_priority(
+                    key.clone(),
+                    0,
+                    vec![self.start.clone()],
+                ));
             } else {
                 unvisited.push(HeapNode::new(key.clone()));
             }
         }
 
-        let mut final_priority = usize::MAX;
+        let mut locations = HashSet::new();
+        let mut answer = usize::MAX;
         let mut i = 0;
         while let Some(node) = unvisited.pop() {
             println!("popped: {:?}", node);
-            if self.final_edge_coords.contains(&node.value) {
-                final_priority = if final_priority < node.priority {
-                    final_priority
-                } else {
-                    node.priority
-                };
+
+            if node.priority > answer {
                 continue;
             }
-
-            assert_ne!(node.priority, usize::MAX);
 
             let mut neighbors = self
                 .edges
@@ -218,18 +238,31 @@ impl Graph {
                 .expect("every unvisited node should have edges")
                 .iter()
                 .map(|edge| {
-                    println!("edge: {:?}", edge);
+                    //println!("edge: {:?}", edge);
+                    let mut new_history = node.history.clone();
+                    new_history.push(edge.0 .0.clone());
                     (
                         edge.0.clone(),
-                        HeapNode::with_priority(edge.0.clone(), node.priority + edge.1),
+                        HeapNode::with_priority(
+                            edge.0.clone(),
+                            node.priority + edge.1,
+                            new_history,
+                        ),
                     )
                 })
                 .collect::<HashMap<_, _>>();
 
+            // WARNING: I think this is mainly what slows everything down. If I switched to an
+            // indexed priority queue where weights could be updated in constant time then bubbled
+            // up I think this would improve dramatically. Goign through every single edge every
+            // single iteratior is crushing performance right now
             let mut to_insert = Vec::with_capacity(neighbors.keys().len());
             unvisited.retain(
                 |unvisited_node| match neighbors.remove(&unvisited_node.value) {
-                    Some(neighbor) if neighbor.priority < unvisited_node.priority => {
+                    Some(mut neighbor) if neighbor.priority <= unvisited_node.priority => {
+                        if neighbor.priority == unvisited_node.priority {
+                            neighbor.history.append(&mut unvisited_node.history.clone());
+                        }
                         to_insert.push(neighbor);
                         false
                     }
@@ -237,18 +270,43 @@ impl Graph {
                 },
             );
             for node in to_insert {
-                println!("inserting: {:?}", node);
+                if node.value.0 == self.end {
+                    answer = node.priority;
+                    for coord in node.history {
+                        locations.insert(coord);
+                    }
+                    break;
+                }
+                //println!("inserting: {:?}", node);
                 unvisited.push(node);
             }
             println!("{i}");
-            print_grid_with_costs(unvisited.clone(), grid.clone());
+            //print_grid_with_costs(unvisited.clone(), grid.clone());
             i += 1;
         }
-        panic!("Should always find the end");
+        print_grid_fill(&locations, grid.clone());
+        (answer, locations)
     }
 }
 
-fn print_grid_with_costs(heap: BinaryHeap<HeapNode<DirectionalCoord>>, grid: Vec<Vec<char>>) {
+fn print_grid_fill(locations: &HashSet<Coord>, grid: Vec<Vec<char>>) {
+    for (row_idx, row) in grid.into_iter().enumerate() {
+        for (col_idx, col) in row.into_iter().enumerate() {
+            let coord = (row_idx, col_idx).into();
+            if locations.contains(&coord) {
+                print!("O");
+            } else {
+                print!("{}", col);
+            }
+        }
+        println!("");
+    }
+}
+
+fn print_grid_with_costs(
+    heap: BinaryHeap<HeapNode<DirectionalCoord, Coord>>,
+    grid: Vec<Vec<char>>,
+) {
     let costs_so_far = heap
         .into_iter()
         .filter(|node| node.priority < usize::MAX)
@@ -272,7 +330,7 @@ fn print_grid_with_costs(heap: BinaryHeap<HeapNode<DirectionalCoord>>, grid: Vec
     for i in 0..grid[0].len() {
         print!("[ {:0>2}  ]", i);
     }
-    println!();
+    //println!();
     for (row_idx, row) in grid.iter().enumerate() {
         print!("{:0>2}", row_idx);
         for (col_idx, space) in row.iter().enumerate() {
@@ -297,7 +355,7 @@ fn print_grid_with_costs(heap: BinaryHeap<HeapNode<DirectionalCoord>>, grid: Vec
                 panic!("error with printing");
             }
         }
-        println!("");
+        //println!("");
     }
 }
 
@@ -320,49 +378,33 @@ fn find_start_and_end(grid: &Vec<Vec<char>>) -> Option<(Coord, Coord)> {
     }
 }
 
-fn get_neighboring_nodes(
-    coord: &Coord,
-    direction: &Direction,
-    grid: &Vec<Vec<char>>,
-) -> Vec<(Edge, Direction)> {
+fn get_neighboring_nodes(coord: &Coord, direction: &Direction, grid: &Vec<Vec<char>>) -> Vec<Edge> {
     let mut result = Vec::with_capacity(4);
     if Direction::Down.is_open(coord, grid) {
         if let Some(cost) = direction.cost(Direction::Down) {
             let edge = ((coord.0 + 1, coord.1).into(), Direction::Down, cost).into();
-            result.push((edge, Direction::Down));
+            result.push(edge);
         }
     }
     if Direction::Up.is_open(coord, grid) {
         if let Some(cost) = direction.cost(Direction::Up) {
             let edge = ((coord.0 - 1, coord.1).into(), Direction::Up, cost).into();
-            result.push((edge, Direction::Up));
+            result.push(edge);
         }
     }
     if Direction::Left.is_open(coord, grid) {
         if let Some(cost) = direction.cost(Direction::Left) {
             let edge = ((coord.0, coord.1 - 1).into(), Direction::Left, cost).into();
-            result.push((edge, Direction::Left));
+            result.push(edge);
         }
     }
     if Direction::Right.is_open(coord, grid) {
         if let Some(cost) = direction.cost(Direction::Right) {
             let edge = ((coord.0, coord.1 + 1).into(), Direction::Right, cost).into();
-            result.push((edge, Direction::Right));
+            result.push(edge);
         }
     }
     result
-}
-
-fn begin_edges(
-    from_coord: &Coord,
-    start_coord: &DirectionalCoord,
-    direction: Direction,
-    grid: &Vec<Vec<char>>,
-) -> Vec<(Edge, Direction, DirectionalCoord)> {
-    get_neighboring_nodes(&from_coord, &direction, &grid)
-        .into_iter()
-        .map(|val| (val.0, val.1, start_coord.clone()))
-        .collect::<Vec<_>>()
 }
 
 impl TryFrom<Vec<Vec<char>>> for Graph {
@@ -375,65 +417,26 @@ impl TryFrom<Vec<Vec<char>>> for Graph {
                 edges: HashMap::new(),
             };
 
-            println!("start: {:?}, end: {:?}", start, end);
+            //println!("start: {:?}, end: {:?}", start, end);
 
-            let mut edge_beginnings = Vec::new();
-            edge_beginnings.append(&mut begin_edges(
-                &start,
-                &(start.clone(), Direction::Right).into(),
-                Direction::Right,
-                &grid,
-            ));
-            let mut visited = HashSet::new();
+            let mut to_visit = vec![DirectionalCoord(start.clone(), Direction::Right)];
 
-            while !edge_beginnings.is_empty() {
-                let (mut edge, direction, start_node) = edge_beginnings.remove(0);
-                println!(
-                    "edge: {:?}, direction: {:?}, start_node: {:?}",
-                    edge, direction, start_node
-                );
-                if !visited.insert((edge.0.clone(), direction.clone())) || graph.end == edge.0 .0 {
-                    graph.add_edge(key, edge);
+            while !to_visit.is_empty() {
+                let node = to_visit.remove(0);
+                // We do the init key first to make sure the end ends up as a key of edges
+                if !graph.init_key(node.clone()) || node.0 == graph.end {
                     continue;
                 }
-                let mut create_edge =
-                    CreateEdgeIterator::new(edge.0 .0.clone(), direction.clone(), &grid);
-                let mut last_coord = None;
-                let sides = direction.sides();
-
-                graph.init_key(edge.0.clone());
-                while let Some(next_coord) = create_edge.next() {
-                    println!("next_coord: {:?}", next_coord);
-                    last_coord = Some(next_coord.into());
-                    edge.1 += 1;
-
-                    if Coord::from(next_coord.clone()) == graph.end {
-                        graph.add_edge(start_node.clone(), edge.clone());
-                        graph.final_edge_coords.insert(start_node);
-                        break;
-                    }
-                    if sides[0].is_open(&next_coord.into(), &grid)
-                        || sides[1].is_open(&next_coord.into(), &grid)
-                    {
-                        graph.add_edge(start_node, edge.clone());
-                        break;
-                    }
+                let edges = get_neighboring_nodes(&node.0, &node.1, &grid);
+                for edge in edges {
+                    to_visit.push(edge.0.clone());
+                    graph.add_edge(node.clone(), edge);
                 }
-                let last_coord = last_coord.ok_or_else(|| {
-                    println!("Failed to set last coord. shouldn't happen");
-                    ()
-                })?;
-                edge_beginnings.append(&mut begin_edges(
-                    &last_coord,
-                    &edge.0,
-                    direction.clone(),
-                    &grid,
-                ));
             }
 
             return Ok(graph);
         }
-        println!("No start and end");
+        //println!("No start and end");
         Err(())
     }
 }
@@ -442,16 +445,16 @@ impl Puzzle for Day16 {
     fn puzzle_1(contents: String) {
         let grid = read_grid(contents);
         let graph = Graph::try_from(grid.clone()).expect("has to be a graph or there's an issue");
-        let mut keys = graph.edges.keys().collect::<Vec<_>>();
-        keys.sort();
-        for key in keys {
-            println!("key: {:?} edges: {:?}", key, graph.edges.get(&key));
-        }
         let cost = graph.shortest_path(grid.clone());
-        println!("The cost is: {cost}");
+        println!(
+            "The cost is: {} and the number of locations visited is {}",
+            cost.0,
+            cost.1.len()
+        );
+        println!("all locations: {:?}", cost.1);
     }
 
     fn puzzle_2(contents: String) {
-        todo!()
+        Self::puzzle_1(contents);
     }
 }
