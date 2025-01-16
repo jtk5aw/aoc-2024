@@ -9,8 +9,9 @@ fn main() {
     Day16::run()
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[derive(Clone, Default, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 enum Direction {
+    #[default]
     Up,
     Down,
     Right,
@@ -58,7 +59,7 @@ impl Direction {
     }
 }
 
-#[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone)]
+#[derive(Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash, Clone)]
 struct Coord(usize, usize);
 
 impl From<(usize, usize)> for Coord {
@@ -67,7 +68,7 @@ impl From<(usize, usize)> for Coord {
     }
 }
 
-#[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone)]
+#[derive(Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash, Clone)]
 struct DirectionalCoord(Coord, Direction);
 
 impl From<((usize, usize), Direction)> for DirectionalCoord {
@@ -138,10 +139,10 @@ struct Graph {
     edges: HashMap<DirectionalCoord, Vec<Edge>>,
 }
 
-#[derive(Eq, PartialEq, Hash, Debug, Clone)]
+#[derive(Eq, PartialEq, Hash, Debug, Clone, Default)]
 struct HeapNode<T, H>
 where
-    T: Hash + Ord,
+    T: Hash + Ord + Default + Clone,
     H: Hash + Ord,
 {
     priority: usize,
@@ -151,7 +152,7 @@ where
 
 impl<T, H> HeapNode<T, H>
 where
-    T: Eq + PartialEq + Hash + Ord,
+    T: Eq + PartialEq + Hash + Ord + Default + Clone,
     H: Eq + PartialEq + Hash + Ord,
 {
     fn new(value: T) -> Self {
@@ -173,7 +174,7 @@ where
 
 impl<T, H> Ord for HeapNode<T, H>
 where
-    T: Hash + Eq + Ord,
+    T: Hash + Eq + Ord + Default + Clone,
     H: Hash + Eq + Ord,
 {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
@@ -187,7 +188,7 @@ where
 
 impl<T, H> PartialOrd for HeapNode<T, H>
 where
-    T: Hash + Eq + Ord,
+    T: Hash + Eq + Ord + Default + Clone,
     H: Hash + Eq + Ord,
 {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
@@ -286,6 +287,227 @@ impl Graph {
         }
         print_grid_fill(&locations, grid.clone());
         (answer, locations)
+    }
+}
+
+struct IndexedBinaryHeap<T: Ord + Hash + Default + Clone, H: Ord + Hash> {
+    values: Vec<HeapNode<T, H>>,
+    indeces: HashMap<DirectionalCoord, usize>,
+}
+
+impl IndexedBinaryHeap<DirectionalCoord, Coord> {
+    fn new() -> Self {
+        let mut values = Vec::new();
+        values.push(HeapNode::new(DirectionalCoord::default()));
+        let indeces = HashMap::new();
+        Self { values, indeces }
+    }
+
+    // Only need to set one index cause this is used with heapify down
+    fn swap_up(&mut self, key: &DirectionalCoord, swap_from: usize, swap_into: usize) {
+        let index_to_update = self
+            .indeces
+            .get_mut(key)
+            .expect("should have key at this point");
+        *index_to_update = swap_into;
+        self.values.swap(swap_into, swap_from);
+    }
+
+    // This always has to end with the value getting removed cause it is a fake value getting
+    // heapified down
+    fn heapify_down(&mut self, index: usize) {
+        let left_index = 2 * index;
+        let right_index = 2 * index + 1;
+        match (self.values.get(left_index), self.values.get(right_index)) {
+            (None, None) => {
+                let val = self.values.remove(index);
+                assert_eq!(val.priority, usize::MAX);
+            }
+            (Some(left_node), None) => {
+                self.swap_up(&left_node.value.clone(), left_index, index);
+                let val = self.values.remove(left_index);
+                assert_eq!(val.priority, usize::MAX);
+            }
+            (Some(left_node), Some(right_node)) => {
+                if left_node.priority < right_node.priority {
+                    self.swap_up(&left_node.value.clone(), left_index, index);
+                    self.heapify_down(left_index);
+                } else {
+                    self.swap_up(&right_node.value.clone(), right_index, index);
+                    self.heapify_down(right_index);
+                }
+            }
+            (None, Some(_)) => panic!("bad heap shape"),
+        };
+    }
+
+    fn pop(&mut self) -> Option<HeapNode<DirectionalCoord, Coord>> {
+        let result = self.values.get(1).cloned();
+        let original_len = self.values.len();
+        self.values[1] = HeapNode::new(DirectionalCoord::default());
+        self.heapify_down(1);
+
+        if let Some(node) = result.as_ref() {
+            let val = self.indeces.remove(&node.value);
+            assert!(val.is_some());
+        }
+        assert_eq!(self.values.len(), original_len - 1);
+        result
+    }
+
+    // Update both indeces cause they're both real values
+    fn swap_down(&mut self, first: (&DirectionalCoord, usize), second: (&DirectionalCoord, usize)) {
+        let first_index_to_update = self
+            .indeces
+            .get_mut(first.0)
+            .expect("should have key at this point");
+        *first_index_to_update = second.1;
+        let second_index_to_update = self
+            .indeces
+            .get_mut(second.0)
+            .expect("should have key at thsi point");
+        *second_index_to_update = first.1;
+        self.values.swap(first.1, second.1);
+    }
+
+    fn heapify_up(&mut self, index: usize) {
+        if index == 1 {
+            return;
+        }
+        let parent_index = index / 2;
+        let current_node = self
+            .values
+            .get(index)
+            .expect("has to be value at current index");
+        match self.values.get(parent_index) {
+            Some(parent_node) => {
+                if current_node.priority < parent_node.priority {
+                    self.swap_down(
+                        (&parent_node.value.clone(), parent_index),
+                        (&current_node.value.clone(), index),
+                    );
+                    self.heapify_up(parent_index);
+                }
+            }
+            None => panic!("shouldn't have invalid parent when heapifying up"),
+        }
+    }
+
+    fn push(&mut self, node: HeapNode<DirectionalCoord, Coord>) {
+        self.values.push(node.clone());
+        if self
+            .indeces
+            .insert(node.value, self.values.len() - 1)
+            .is_some()
+        {
+            panic!("already inserted this key");
+        }
+        self.heapify_up(self.values.len() - 1);
+    }
+
+    fn attempt_decrement_key(&mut self, key: &DirectionalCoord, new_priority: usize) -> bool {
+        let index = self
+            .indeces
+            .get(key)
+            .expect("provided key has to be one already inserted");
+        let priority_to_update = self
+            .values
+            .get_mut(*index)
+            .expect("provided index must be correct");
+        assert!(priority_to_update.value == *key);
+        println!(
+            "new_priority: {new_priority} priority_to_update: {}",
+            priority_to_update.priority
+        );
+        if new_priority < priority_to_update.priority {
+            priority_to_update.priority = new_priority;
+            self.heapify_up(*index);
+            return true;
+        }
+        false
+    }
+
+    pub fn print_binary_tree(&self) {
+        println!("===START===");
+        for (idx, value) in self.values.iter().enumerate() {
+            println!(
+                "IDX: {idx}, priority: {} value: {:?}",
+                value.priority, value.value
+            );
+        }
+        for (key, value) in self.indeces.iter() {
+            println!("key: {:?}, index: {value}", key);
+        }
+        println!("====END====");
+    }
+}
+
+mod test_heap {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use crate::{Coord, Direction, DirectionalCoord, HeapNode, IndexedBinaryHeap};
+
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    fn with_priority(priority: usize) -> HeapNode<DirectionalCoord, Coord> {
+        let count = COUNTER.fetch_add(1, Ordering::SeqCst);
+        HeapNode::with_priority(((count, count), Direction::Up).into(), priority, Vec::new())
+    }
+
+    #[test]
+    fn test_heap_basic() {
+        let mut heap = IndexedBinaryHeap::new();
+        heap.push(with_priority(5));
+        heap.print_binary_tree();
+        heap.push(with_priority(3));
+        heap.push(with_priority(4));
+        heap.print_binary_tree();
+        heap.push(with_priority(2));
+        heap.print_binary_tree();
+        heap.push(with_priority(15));
+        heap.push(with_priority(15));
+        heap.push(with_priority(10));
+        heap.push(with_priority(10));
+        heap.push(with_priority(10));
+        heap.print_binary_tree();
+        heap.push(with_priority(4));
+        heap.print_binary_tree();
+        let two = heap.pop().unwrap();
+        assert_eq!(2, two.priority);
+        heap.print_binary_tree();
+        let three = heap.pop().unwrap();
+        assert_eq!(3, three.priority);
+        let four = heap.pop().unwrap();
+        assert_eq!(4, four.priority);
+        let four = heap.pop().unwrap();
+        assert_eq!(4, four.priority);
+        heap.print_binary_tree();
+    }
+
+    #[test]
+    fn test_heap_decrement_key() {
+        let mut heap = IndexedBinaryHeap::new();
+        heap.push(with_priority(5));
+        heap.push(with_priority(3));
+        heap.push(with_priority(4));
+        heap.push(with_priority(2));
+        heap.push(with_priority(15));
+        heap.push(with_priority(15));
+        heap.push(with_priority(10));
+        heap.push(with_priority(10));
+        let node_to_track = with_priority(15);
+        heap.push(node_to_track.clone());
+        heap.print_binary_tree();
+        println!("node_to_track: {:?}", node_to_track);
+        assert!(!heap.attempt_decrement_key(&node_to_track.value, 20));
+        heap.print_binary_tree();
+        assert!(heap.attempt_decrement_key(&node_to_track.value, 13));
+        heap.print_binary_tree();
+        assert!(heap.attempt_decrement_key(&node_to_track.value, 4));
+        heap.print_binary_tree();
+        let value = heap.pop().expect("has to exist");
+        assert_eq!(2_usize, value.priority);
+        heap.print_binary_tree();
     }
 }
 
