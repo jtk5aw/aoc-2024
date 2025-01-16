@@ -226,7 +226,7 @@ impl Graph {
         let mut answer = usize::MAX;
         let mut i = 0;
         while let Some(node) = unvisited.pop() {
-            println!("popped: {:?}", node);
+            //println!("popped: {:?}", node);
 
             if node.priority > answer {
                 continue;
