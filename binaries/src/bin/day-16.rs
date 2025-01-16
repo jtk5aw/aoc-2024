@@ -210,7 +210,7 @@ impl Graph {
     }
 
     fn shortest_path(self, grid: Vec<Vec<char>>) -> (usize, HashSet<Coord>) {
-        let mut unvisited = BinaryHeap::new();
+        let mut unvisited = IndexedBinaryHeap::new();
         for key in self.edges.keys() {
             if key.0 == self.start {
                 unvisited.push(HeapNode::with_priority(
@@ -226,61 +226,40 @@ impl Graph {
         let mut locations = HashSet::new();
         let mut answer = usize::MAX;
         let mut i = 0;
+        unvisited.print_binary_tree();
         while let Some(node) = unvisited.pop() {
-            println!("popped: {:?}", node);
-
+            //println!("popped: {:?}", node);
             if node.priority > answer {
                 continue;
             }
 
-            let mut neighbors = self
-                .edges
+            self.edges
                 .get(&node.value)
                 .expect("every unvisited node should have edges")
                 .iter()
-                .map(|edge| {
+                .for_each(|edge| {
                     //println!("edge: {:?}", edge);
                     let mut new_history = node.history.clone();
                     new_history.push(edge.0 .0.clone());
-                    (
-                        edge.0.clone(),
-                        HeapNode::with_priority(
-                            edge.0.clone(),
-                            node.priority + edge.1,
-                            new_history,
-                        ),
-                    )
-                })
-                .collect::<HashMap<_, _>>();
-
-            // WARNING: I think this is mainly what slows everything down. If I switched to an
-            // indexed priority queue where weights could be updated in constant time then bubbled
-            // up I think this would improve dramatically. Goign through every single edge every
-            // single iteratior is crushing performance right now
-            let mut to_insert = Vec::with_capacity(neighbors.keys().len());
-            unvisited.retain(
-                |unvisited_node| match neighbors.remove(&unvisited_node.value) {
-                    Some(mut neighbor) if neighbor.priority <= unvisited_node.priority => {
-                        if neighbor.priority == unvisited_node.priority {
-                            neighbor.history.append(&mut unvisited_node.history.clone());
+                    let new_priority = node.priority + edge.1;
+                    match unvisited.attempt_decrement_key(&edge.0, new_priority) {
+                        DecrementKeyResult::NoDecrementKeyDoesNotExist
+                        | DecrementKeyResult::NoDecrementTooSmall => {}
+                        DecrementKeyResult::NoDecrementEqual => {
+                            unvisited.add_to_history(&edge.0, new_history)
                         }
-                        to_insert.push(neighbor);
-                        false
+                        DecrementKeyResult::SuccessfullyDecremented => {
+                            if edge.0 .0 == self.end {
+                                answer = node.priority;
+                                for coord in new_history.iter() {
+                                    locations.insert(coord.clone());
+                                }
+                            }
+                            unvisited.update_history(&edge.0, new_history);
+                        }
                     }
-                    _ => true,
-                },
-            );
-            for node in to_insert {
-                if node.value.0 == self.end {
-                    answer = node.priority;
-                    for coord in node.history {
-                        locations.insert(coord);
-                    }
-                    break;
-                }
-                //println!("inserting: {:?}", node);
-                unvisited.push(node);
-            }
+                });
+
             println!("{i}");
             //print_grid_with_costs(unvisited.clone(), grid.clone());
             i += 1;
@@ -290,6 +269,7 @@ impl Graph {
     }
 }
 
+#[derive(Clone)]
 struct IndexedBinaryHeap<T: Ord + Hash + Default + Clone, H: Ord + Hash> {
     values: Vec<HeapNode<T, H>>,
     indeces: HashMap<DirectionalCoord, usize>,
@@ -303,60 +283,68 @@ impl IndexedBinaryHeap<DirectionalCoord, Coord> {
         Self { values, indeces }
     }
 
-    // Only need to set one index cause this is used with heapify down
-    fn swap_up(&mut self, key: &DirectionalCoord, swap_from: usize, swap_into: usize) {
-        let index_to_update = self
-            .indeces
-            .get_mut(key)
-            .expect("should have key at this point");
-        *index_to_update = swap_into;
-        self.values.swap(swap_into, swap_from);
-    }
-
-    // This always has to end with the value getting removed cause it is a fake value getting
-    // heapified down
     fn heapify_down(&mut self, index: usize) {
         let left_index = 2 * index;
         let right_index = 2 * index + 1;
-        match (self.values.get(left_index), self.values.get(right_index)) {
-            (None, None) => {
-                let val = self.values.remove(index);
-                assert_eq!(val.priority, usize::MAX);
-            }
-            (Some(left_node), None) => {
-                self.swap_up(&left_node.value.clone(), left_index, index);
-                let val = self.values.remove(left_index);
-                assert_eq!(val.priority, usize::MAX);
-            }
-            (Some(left_node), Some(right_node)) => {
-                if left_node.priority < right_node.priority {
-                    self.swap_up(&left_node.value.clone(), left_index, index);
-                    self.heapify_down(left_index);
-                } else {
-                    self.swap_up(&right_node.value.clone(), right_index, index);
-                    self.heapify_down(right_index);
+        if let Some(curr_node) = self.values.get(index) {
+            match (self.values.get(left_index), self.values.get(right_index)) {
+                (None, None) => {}
+                (Some(left_node), None) => {
+                    self.swap_both(
+                        (&left_node.value.clone(), left_index),
+                        (&curr_node.value.clone(), index),
+                    );
                 }
-            }
-            (None, Some(_)) => panic!("bad heap shape"),
-        };
+                (Some(left_node), Some(right_node)) => {
+                    if left_node.priority < right_node.priority {
+                        self.swap_both(
+                            (&left_node.value.clone(), left_index),
+                            (&curr_node.value.clone(), index),
+                        );
+                        self.heapify_down(left_index);
+                    } else {
+                        self.swap_both(
+                            (&right_node.value.clone(), right_index),
+                            (&curr_node.value.clone(), index),
+                        );
+                        self.heapify_down(right_index);
+                    }
+                }
+                (None, Some(_)) => panic!("bad heap shape"),
+            };
+        }
     }
 
     fn pop(&mut self) -> Option<HeapNode<DirectionalCoord, Coord>> {
-        let result = self.values.get(1).cloned();
+        if self.values.len() < 2 {
+            return None;
+        }
         let original_len = self.values.len();
-        self.values[1] = HeapNode::new(DirectionalCoord::default());
+        let result = self.swap_start_and_end();
         self.heapify_down(1);
 
-        if let Some(node) = result.as_ref() {
-            let val = self.indeces.remove(&node.value);
-            assert!(val.is_some());
-        }
+        let val = self.indeces.remove(&result.value);
+        assert!(val.is_some());
+
         assert_eq!(self.values.len(), original_len - 1);
+        Some(result)
+    }
+
+    // Only need to set one index because the other value is removed
+    fn swap_start_and_end(&mut self) -> HeapNode<DirectionalCoord, Coord> {
+        let result = self.values.swap_remove(1);
+        if let Some(first_node) = self.values.get(1) {
+            let index_to_update = self
+                .indeces
+                .get_mut(&first_node.value)
+                .expect("should have key at this point");
+            *index_to_update = 1;
+        }
         result
     }
 
     // Update both indeces cause they're both real values
-    fn swap_down(&mut self, first: (&DirectionalCoord, usize), second: (&DirectionalCoord, usize)) {
+    fn swap_both(&mut self, first: (&DirectionalCoord, usize), second: (&DirectionalCoord, usize)) {
         let first_index_to_update = self
             .indeces
             .get_mut(first.0)
@@ -382,7 +370,7 @@ impl IndexedBinaryHeap<DirectionalCoord, Coord> {
         match self.values.get(parent_index) {
             Some(parent_node) => {
                 if current_node.priority < parent_node.priority {
-                    self.swap_down(
+                    self.swap_both(
                         (&parent_node.value.clone(), parent_index),
                         (&current_node.value.clone(), index),
                     );
@@ -405,26 +393,40 @@ impl IndexedBinaryHeap<DirectionalCoord, Coord> {
         self.heapify_up(self.values.len() - 1);
     }
 
-    fn attempt_decrement_key(&mut self, key: &DirectionalCoord, new_priority: usize) -> bool {
-        let index = self
-            .indeces
-            .get(key)
-            .expect("provided key has to be one already inserted");
-        let priority_to_update = self
-            .values
-            .get_mut(*index)
-            .expect("provided index must be correct");
-        assert!(priority_to_update.value == *key);
-        println!(
-            "new_priority: {new_priority} priority_to_update: {}",
-            priority_to_update.priority
-        );
-        if new_priority < priority_to_update.priority {
-            priority_to_update.priority = new_priority;
-            self.heapify_up(*index);
-            return true;
+    fn attempt_decrement_key(
+        &mut self,
+        key: &DirectionalCoord,
+        new_priority: usize,
+    ) -> DecrementKeyResult {
+        if let Some(index) = self.indeces.get(key) {
+            let priority_to_update = self
+                .values
+                .get_mut(*index)
+                .expect("provided index must be correct");
+            assert!(priority_to_update.value == *key);
+            if new_priority < priority_to_update.priority {
+                priority_to_update.priority = new_priority;
+                self.heapify_up(*index);
+                return DecrementKeyResult::SuccessfullyDecremented;
+            } else if new_priority == priority_to_update.priority {
+                return DecrementKeyResult::NoDecrementEqual;
+            }
+            return DecrementKeyResult::NoDecrementTooSmall;
         }
-        false
+        return DecrementKeyResult::NoDecrementKeyDoesNotExist;
+    }
+
+    // TODO: This is not something the binary heap should have knowledge of. The history struct
+    // value should really just be a part of the `value` of the heap node not be its own thing
+    // but oh well for now
+    fn update_history(&mut self, key: &DirectionalCoord, new_history: Vec<Coord>) {
+        let index = self.indeces.get(key).expect("provided key must exist");
+        self.values[*index].history = new_history;
+    }
+
+    fn add_to_history(&mut self, key: &DirectionalCoord, mut history: Vec<Coord>) {
+        let index = self.indeces.get(key).expect("provided key must exist");
+        self.values[*index].history.append(&mut history);
     }
 
     pub fn print_binary_tree(&self) {
@@ -435,17 +437,32 @@ impl IndexedBinaryHeap<DirectionalCoord, Coord> {
                 value.priority, value.value
             );
         }
-        for (key, value) in self.indeces.iter() {
-            println!("key: {:?}, index: {value}", key);
+        let mut keys = self.indeces.keys().collect::<Vec<_>>();
+        keys.sort();
+        for key in keys {
+            println!(
+                "key: {:?}, index: {:?}",
+                key,
+                self.indeces.get(key).expect("has to exist")
+            );
         }
         println!("====END====");
     }
 }
 
+enum DecrementKeyResult {
+    NoDecrementKeyDoesNotExist,
+    NoDecrementTooSmall,
+    NoDecrementEqual,
+    SuccessfullyDecremented,
+}
+
 mod test_heap {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use crate::{Coord, Direction, DirectionalCoord, HeapNode, IndexedBinaryHeap};
+    use crate::{
+        Coord, DecrementKeyResult, Direction, DirectionalCoord, HeapNode, IndexedBinaryHeap,
+    };
 
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -499,11 +516,20 @@ mod test_heap {
         heap.push(node_to_track.clone());
         heap.print_binary_tree();
         println!("node_to_track: {:?}", node_to_track);
-        assert!(!heap.attempt_decrement_key(&node_to_track.value, 20));
+        assert!(!matches!(
+            heap.attempt_decrement_key(&node_to_track.value, 20),
+            DecrementKeyResult::SuccessfullyDecremented
+        ));
         heap.print_binary_tree();
-        assert!(heap.attempt_decrement_key(&node_to_track.value, 13));
+        assert!(matches!(
+            heap.attempt_decrement_key(&node_to_track.value, 13),
+            DecrementKeyResult::SuccessfullyDecremented
+        ));
         heap.print_binary_tree();
-        assert!(heap.attempt_decrement_key(&node_to_track.value, 4));
+        assert!(matches!(
+            heap.attempt_decrement_key(&node_to_track.value, 4),
+            DecrementKeyResult::SuccessfullyDecremented
+        ));
         heap.print_binary_tree();
         let value = heap.pop().expect("has to exist");
         assert_eq!(2_usize, value.priority);
@@ -525,11 +551,9 @@ fn print_grid_fill(locations: &HashSet<Coord>, grid: Vec<Vec<char>>) {
     }
 }
 
-fn print_grid_with_costs(
-    heap: BinaryHeap<HeapNode<DirectionalCoord, Coord>>,
-    grid: Vec<Vec<char>>,
-) {
+fn print_grid_with_costs(heap: IndexedBinaryHeap<DirectionalCoord, Coord>, grid: Vec<Vec<char>>) {
     let costs_so_far = heap
+        .values
         .into_iter()
         .filter(|node| node.priority < usize::MAX)
         .map(|node| (node.value, node.priority))
@@ -552,7 +576,7 @@ fn print_grid_with_costs(
     for i in 0..grid[0].len() {
         print!("[ {:0>2}  ]", i);
     }
-    //println!();
+    println!();
     for (row_idx, row) in grid.iter().enumerate() {
         print!("{:0>2}", row_idx);
         for (col_idx, space) in row.iter().enumerate() {
@@ -577,7 +601,7 @@ fn print_grid_with_costs(
                 panic!("error with printing");
             }
         }
-        //println!("");
+        println!("");
     }
 }
 
