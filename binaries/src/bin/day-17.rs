@@ -1,6 +1,5 @@
 use std::{
     collections::{HashMap, HashSet},
-    env::current_dir,
     ops::Deref,
 };
 
@@ -121,12 +120,6 @@ impl From<String> for Computer {
 }
 
 impl Computer {
-    fn set_regs(&mut self, a: usize, b: usize, c: usize) {
-        self.a = a;
-        self.b = b;
-        self.c = c;
-    }
-
     fn get_combo_value(&self, combo: &ComboOperand) -> usize {
         match combo {
             ComboOperand::Literal(value) => *value,
@@ -143,8 +136,6 @@ impl Computer {
             .code
             .get(pointer + 1)
             .expect("if we had a current_code operand should exist too");
-        //println!("a: {}, b: {}, c: {}", self.a, self.b, self.c);
-        //println!("Performing: {:?} with operand {:?}", current_code, operand);
         match current_code.instruction {
             Instruction::Jnz if self.a != 0 => return Some(operand.literal),
             Instruction::Jnz => {}
@@ -197,125 +188,11 @@ impl Computer {
 }
 
 fn get_program_out_string(mut computer: Computer) -> String {
-    //println!("{:?}", computer);
-    &mut computer.run_program();
+    let _ = &mut computer.run_program();
     computer.out_string()
 }
 
-fn run_program_with_target(computer: Computer) -> Result<(), usize> {
-    let target = computer
-        .code
-        .iter()
-        .map(|code| code.literal)
-        .collect::<Vec<_>>();
-
-    let mut a_reg = 1_000_000_000_000_000_000;
-    loop {
-        let mut test_a_reg = a_reg;
-        for _ in 0..8 {
-            test_a_reg >>= 3;
-        }
-        if test_a_reg != 0 {
-            let (mut a, mut b, _) = run_code_magic(a_reg, false);
-            let mut target_idx = 0;
-            let mut so_far = Vec::with_capacity(target.len());
-            while target_idx < target.len() && b == target[target_idx] {
-                so_far.push(b);
-                target_idx += 1;
-                (a, b, _) = run_code_magic(a, false);
-            }
-
-            if target_idx == target.len() - 1 {
-                println!("Found! {a_reg}");
-                break;
-            }
-            if target_idx > 6 {
-                println!("target is: {:?}", target);
-                println!("#special {a_reg} {target_idx}");
-                println!("so_far: {:?}", so_far);
-            }
-            //println!("Not found :( {a_reg}. Made it to {target_idx}");
-        } else {
-            println!("skipped {a_reg}");
-        }
-
-        a_reg += 1;
-    }
-
-    Ok(())
-}
-
-fn run_code_magic(a_reg: usize, debug: bool) -> (usize, usize, usize) {
-    let mut a = a_reg;
-    let mut b = a % 8;
-    if debug {
-        println!("a: {a}");
-        println!("b.1: {b}");
-    }
-    b ^= 1;
-    if debug {
-        println!("b.2: {b}");
-    }
-    let mut c = a >> b;
-    if debug {
-        println!("c.0: {c}");
-    }
-    c ^= 6;
-    if debug {
-        println!("c.1: {c}");
-    }
-    b ^= c;
-    if debug {
-        println!("b.3: {b}");
-    }
-    b %= 8;
-    if debug {
-        println!("b: {b}");
-    }
-    a >>= 3;
-    (a, b, c)
-}
-
-fn puzzle_2_test(computer: Computer) {
-    for i in 0..9 {
-        let mut a_reg_vec = vec![0; 14];
-        let last = a_reg_vec.len() - 1;
-        a_reg_vec[0] = 4;
-        a_reg_vec[last] = 5;
-        let mut a_reg = a_reg_vec
-            .into_iter()
-            .map(|val| val.to_string())
-            .collect::<String>()
-            .parse()
-            .expect("has to be usize");
-        a_reg += 8 * i;
-
-        let mut test_computer = computer.clone();
-        test_computer.a = a_reg;
-        let computer_result = get_program_out_string(test_computer);
-        //println!("computer_result: {computer_result}");
-
-        let mut b = 0;
-        let mut count = 1;
-        (a_reg, b, _) = run_code_magic(a_reg, false);
-        let mut result = Vec::new();
-        result.push(b);
-        while a_reg > 0 {
-            (a_reg, b, _) = run_code_magic(a_reg, false);
-            result.push(b);
-            count += 1;
-        }
-        let result_val = result
-            .iter()
-            .map(|val| val.to_string())
-            .collect::<Vec<_>>()
-            .join(",");
-        println!("len: {}", result.len());
-        println!("{result_val}");
-    }
-    return;
-}
-
+// Claude basically wrote this function
 fn convert_to_bits(num: usize, len: usize) -> Vec<Bit> {
     // Get number of bits needed to represent the number
     let bits_needed = if num == 0 {
@@ -346,12 +223,22 @@ fn convert_to_bits(num: usize, len: usize) -> Vec<Bit> {
     // Include leading zeros up to length
     while bits.len() < len {
         bits.push(Bit::Zero);
-        println!("pushing: len(bits): {} len: {}", bits.len(), len);
     }
     // Reverse to get most significant bits first
     bits.reverse();
     assert!(bits.len() == len);
     bits
+}
+
+// Claude basically wrote this function too
+fn bitvec_to_usize(bits: &Vec<Bit>) -> usize {
+    let mut result: usize = 0;
+
+    for bit in bits.iter() {
+        result = (result << 1) | **bit;
+    }
+
+    result
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -377,16 +264,6 @@ struct PrefixLockBitVec {
     playground_bits: Vec<Bit>,
 }
 
-fn bitvec_to_usize(bits: &Vec<Bit>) -> usize {
-    let mut result: usize = 0;
-
-    for bit in bits.iter() {
-        result = (result << 1) | **bit;
-    }
-
-    result
-}
-
 impl Iterator for PrefixLockBitVec {
     type Item = (usize, Vec<Bit>);
 
@@ -395,7 +272,6 @@ impl Iterator for PrefixLockBitVec {
             return None;
         }
 
-        println!("current_new_val: {}", self.current_new_val);
         let suffix_bits = convert_to_bits(self.current_new_val, 3);
         self.playground_bits.truncate(self.prefix_bits.len());
         for bit in suffix_bits.iter() {
@@ -445,7 +321,6 @@ impl Puzzle for Day17 {
         let mut skip_map: HashMap<usize, HashSet<Vec<Bit>>> = HashMap::new();
 
         while !matched_target {
-            println!("current_bits: {:?}", current_bits);
             let iter = PrefixLockBitVec::new(current_bits.clone());
             match find_match(
                 matched_previously,
@@ -481,6 +356,7 @@ impl Puzzle for Day17 {
                 }
             }
         }
+        println!("num: {}", bitvec_to_usize(&current_bits));
     }
 }
 
@@ -491,19 +367,14 @@ fn find_match(
     mut iter: PrefixLockBitVec,
     computer: Computer,
 ) -> Option<(Vec<usize>, Vec<Bit>)> {
-    let mut skipped = false;
     while let Some((val, bits)) = iter.next() {
         if let Some(set) = skip.get(&matched_previously) {
             if set.contains(&bits) {
                 println!("skipping!");
-                println!("matched_previously: {matched_previously}");
-                skipped = true;
                 continue;
             }
         }
         let mut test_computer = computer.clone();
-        println!("new a is: {val} with bits {:?}", bits);
-        //println!("right shifted a is: {}", val >> 3);
         test_computer.a = val;
         test_computer.run_program();
         let output = test_computer
@@ -512,8 +383,6 @@ fn find_match(
             .into_iter()
             .rev()
             .collect::<Vec<_>>();
-        println!("output is: {:?}", test_computer.out);
-        println!("reversed output is: {:?}", output);
 
         if output.len() == matched_previously + 1 {
             let mut all_match = true;
