@@ -1,4 +1,8 @@
-use std::collections::HashMap;
+use std::{
+    collections::{HashMap, HashSet},
+    env::current_dir,
+    ops::Deref,
+};
 
 use helpers::Puzzle;
 
@@ -134,8 +138,6 @@ impl Computer {
     }
 
     fn compute(&mut self, pointer: usize) -> Option<usize> {
-        println!("pointer: {pointer}");
-        println!("a: {}, b: {}, c: {}", self.a, self.b, self.c);
         let current_code = self.code.get(pointer)?;
         let operand = self
             .code
@@ -178,6 +180,13 @@ impl Computer {
         Some(pointer + 2)
     }
 
+    fn run_program(&mut self) {
+        let mut pointer = 0;
+        while let Some(next_pointer) = &mut self.compute(pointer) {
+            pointer = *next_pointer;
+        }
+    }
+
     fn out_string(&self) -> String {
         self.out
             .iter()
@@ -187,12 +196,9 @@ impl Computer {
     }
 }
 
-fn run_program(mut computer: Computer) -> String {
-    println!("computer is: {:?}", computer);
-    let mut pointer = 0;
-    while let Some(next_pointer) = &mut computer.compute(pointer) {
-        pointer = *next_pointer;
-    }
+fn get_program_out_string(mut computer: Computer) -> String {
+    //println!("{:?}", computer);
+    &mut computer.run_program();
     computer.out_string()
 }
 
@@ -210,13 +216,13 @@ fn run_program_with_target(computer: Computer) -> Result<(), usize> {
             test_a_reg >>= 3;
         }
         if test_a_reg != 0 {
-            let (mut a, mut b, _) = run_code_magic(a_reg);
+            let (mut a, mut b, _) = run_code_magic(a_reg, false);
             let mut target_idx = 0;
             let mut so_far = Vec::with_capacity(target.len());
             while target_idx < target.len() && b == target[target_idx] {
                 so_far.push(b);
                 target_idx += 1;
-                (a, b, _) = run_code_magic(a);
+                (a, b, _) = run_code_magic(a, false);
             }
 
             if target_idx == target.len() - 1 {
@@ -239,60 +245,290 @@ fn run_program_with_target(computer: Computer) -> Result<(), usize> {
     Ok(())
 }
 
-fn run_code_magic(a_reg: usize) -> (usize, usize, usize) {
+fn run_code_magic(a_reg: usize, debug: bool) -> (usize, usize, usize) {
     let mut a = a_reg;
     let mut b = a % 8;
+    if debug {
+        println!("a: {a}");
+        println!("b.1: {b}");
+    }
     b ^= 1;
+    if debug {
+        println!("b.2: {b}");
+    }
     let mut c = a >> b;
+    if debug {
+        println!("c.0: {c}");
+    }
     c ^= 6;
+    if debug {
+        println!("c.1: {c}");
+    }
     b ^= c;
+    if debug {
+        println!("b.3: {b}");
+    }
     b %= 8;
+    if debug {
+        println!("b: {b}");
+    }
     a >>= 3;
     (a, b, c)
+}
+
+fn puzzle_2_test(computer: Computer) {
+    for i in 0..9 {
+        let mut a_reg_vec = vec![0; 14];
+        let last = a_reg_vec.len() - 1;
+        a_reg_vec[0] = 4;
+        a_reg_vec[last] = 5;
+        let mut a_reg = a_reg_vec
+            .into_iter()
+            .map(|val| val.to_string())
+            .collect::<String>()
+            .parse()
+            .expect("has to be usize");
+        a_reg += 8 * i;
+
+        let mut test_computer = computer.clone();
+        test_computer.a = a_reg;
+        let computer_result = get_program_out_string(test_computer);
+        //println!("computer_result: {computer_result}");
+
+        let mut b = 0;
+        let mut count = 1;
+        (a_reg, b, _) = run_code_magic(a_reg, false);
+        let mut result = Vec::new();
+        result.push(b);
+        while a_reg > 0 {
+            (a_reg, b, _) = run_code_magic(a_reg, false);
+            result.push(b);
+            count += 1;
+        }
+        let result_val = result
+            .iter()
+            .map(|val| val.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        println!("len: {}", result.len());
+        println!("{result_val}");
+    }
+    return;
+}
+
+fn convert_to_bits(num: usize, len: usize) -> Vec<Bit> {
+    // Get number of bits needed to represent the number
+    let bits_needed = if num == 0 {
+        return vec![Bit::Zero; len];
+    } else {
+        (usize::BITS - num.leading_zeros()) as usize
+    };
+
+    let mut bits = Vec::with_capacity(bits_needed);
+    let mut n = num;
+
+    // Extract bits from right to left
+    while n > 0 {
+        let bit = match n & 1 {
+            0 => Bit::Zero,
+            1 => Bit::One,
+            _ => panic!("this is impossible"),
+        };
+        bits.push(bit);
+        n >>= 1;
+    }
+
+    // If number was 0, push a single 0
+    if bits.is_empty() {
+        bits.push(Bit::Zero);
+    }
+
+    // Include leading zeros up to length
+    while bits.len() < len {
+        bits.push(Bit::Zero);
+        println!("pushing: len(bits): {} len: {}", bits.len(), len);
+    }
+    // Reverse to get most significant bits first
+    bits.reverse();
+    assert!(bits.len() == len);
+    bits
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+enum Bit {
+    One,
+    Zero,
+}
+
+impl Deref for Bit {
+    type Target = usize;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Bit::One => &1,
+            Bit::Zero => &0,
+        }
+    }
+}
+
+struct PrefixLockBitVec {
+    current_new_val: usize,
+    prefix_bits: Vec<Bit>,
+    playground_bits: Vec<Bit>,
+}
+
+fn bitvec_to_usize(bits: &Vec<Bit>) -> usize {
+    let mut result: usize = 0;
+
+    for bit in bits.iter() {
+        result = (result << 1) | **bit;
+    }
+
+    result
+}
+
+impl Iterator for PrefixLockBitVec {
+    type Item = (usize, Vec<Bit>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current_new_val > 7 {
+            return None;
+        }
+
+        println!("current_new_val: {}", self.current_new_val);
+        let suffix_bits = convert_to_bits(self.current_new_val, 3);
+        self.playground_bits.truncate(self.prefix_bits.len());
+        for bit in suffix_bits.iter() {
+            self.playground_bits.push(bit.clone());
+        }
+        assert!(self.playground_bits.len() == self.prefix_bits.len() + 3);
+        let current = bitvec_to_usize(&self.playground_bits);
+
+        self.current_new_val += 1;
+
+        Some((current, suffix_bits))
+    }
+}
+
+impl PrefixLockBitVec {
+    fn new(prefix_bits: Vec<Bit>) -> Self {
+        let mut playground_bits = Vec::with_capacity(prefix_bits.len());
+        playground_bits.clone_from(&prefix_bits);
+        Self {
+            current_new_val: 0,
+            playground_bits,
+            prefix_bits,
+        }
+    }
 }
 
 impl Puzzle for Day17 {
     fn puzzle_1(contents: String) {
         let computer: Computer = contents.into();
         println!("computer is: {:?}", computer);
-        let out = run_program(computer);
+        let out = get_program_out_string(computer);
         println!("out: {out}");
     }
 
     fn puzzle_2(contents: String) {
         let computer: Computer = contents.into();
-        println!("computer is: {:?}", computer);
-        let mut a_reg = 0;
-        let mut a_reg_test = 253580150000000;
-        let mut b = 0;
-        let mut count = 1;
-        (a_reg_test, b, _) = run_code_magic(a_reg_test);
-        print!("{b}");
-        while a_reg_test > 0 {
-            print!(",");
-            (a_reg_test, b, _) = run_code_magic(a_reg_test);
-            print!("{b}");
-            count += 1;
-        }
-        println!("");
-        println!("{count}");
-        return;
+        let target = computer
+            .code
+            .iter()
+            .map(|code| code.literal)
+            .rev()
+            .collect::<Vec<_>>();
 
-        loop {
-            let mut new_computer = computer.clone();
-            new_computer.set_regs(a_reg, 0, 0);
-            match run_program_with_target(new_computer) {
-                Ok(()) => println!("Found! {a_reg}"),
-                Err(failed_at) if failed_at > 0 => {
-                    println!("#special Not Found :( {failed_at} a_reg: {a_reg}");
-                    break;
+        let mut matched_target = false;
+        let mut current_bits = Vec::with_capacity(46);
+        let mut matched_previously = 0;
+        let mut skip_map: HashMap<usize, HashSet<Vec<Bit>>> = HashMap::new();
+
+        while !matched_target {
+            println!("current_bits: {:?}", current_bits);
+            let iter = PrefixLockBitVec::new(current_bits.clone());
+            match find_match(
+                matched_previously,
+                &target,
+                &skip_map,
+                iter,
+                computer.clone(),
+            ) {
+                Some((output, mut bits)) => {
+                    matched_previously += 1;
+                    matched_target = output.len() == target.len();
+                    current_bits.append(&mut bits);
                 }
-                Err(failed_at) => println!("Not found :( {failed_at} a_reg: {a_reg}"),
+                None => {
+                    println!(
+                        "Couldn't find any in current state, going back one level and tryin again"
+                    );
+                    let to_skip = current_bits
+                        .drain(current_bits.len() - 3..)
+                        .collect::<Vec<_>>();
+                    assert!(to_skip.len() == 3);
+                    // Clear the current level since we're going back up and will start from a
+                    // different place
+                    skip_map
+                        .entry(matched_previously)
+                        .and_modify(|set| set.clear());
+                    matched_previously -= 1;
+                    // Add to the level above
+                    skip_map
+                        .entry(matched_previously)
+                        .or_insert_with(HashSet::new)
+                        .insert(to_skip);
+                }
             }
-            println!("Not found :( {a_reg}");
-            a_reg += 1;
         }
     }
+}
+
+fn find_match(
+    matched_previously: usize,
+    target: &Vec<usize>,
+    skip: &HashMap<usize, HashSet<Vec<Bit>>>,
+    mut iter: PrefixLockBitVec,
+    computer: Computer,
+) -> Option<(Vec<usize>, Vec<Bit>)> {
+    let mut skipped = false;
+    while let Some((val, bits)) = iter.next() {
+        if let Some(set) = skip.get(&matched_previously) {
+            if set.contains(&bits) {
+                println!("skipping!");
+                println!("matched_previously: {matched_previously}");
+                skipped = true;
+                continue;
+            }
+        }
+        let mut test_computer = computer.clone();
+        println!("new a is: {val} with bits {:?}", bits);
+        //println!("right shifted a is: {}", val >> 3);
+        test_computer.a = val;
+        test_computer.run_program();
+        let output = test_computer
+            .out
+            .clone()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>();
+        println!("output is: {:?}", test_computer.out);
+        println!("reversed output is: {:?}", output);
+
+        if output.len() == matched_previously + 1 {
+            let mut all_match = true;
+            for zip in output.iter().zip(target.iter()) {
+                if *zip.0 != *zip.1 {
+                    all_match = false;
+                }
+            }
+            if all_match {
+                println!("matched!");
+                return Some((output, bits));
+            }
+        }
+    }
+    None
 }
 
 fn main() {
