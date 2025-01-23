@@ -1,9 +1,4 @@
-use std::{
-    cmp::Ordering,
-    collections::{HashSet, VecDeque},
-    iter::Take,
-    str::Lines,
-};
+use std::collections::{HashSet, VecDeque};
 
 use helpers::Puzzle;
 
@@ -121,6 +116,7 @@ fn find_shortest_path(grid: &mut Vec<Vec<Space>>) -> Result<usize, ()> {
     Err(())
 }
 
+#[derive(Clone)]
 struct Path {
     upper_bounds: (usize, usize),
     blocked: HashSet<(usize, usize)>,
@@ -151,32 +147,51 @@ impl Path {
             path_set,
             blocked,
         };
-        result.dfs((upper_bounds.0 - 1, upper_bounds.1 - 1));
+        if let Err(reason) = result.dfs() {
+            panic!("Failed to do the initial dfs because: {reason}");
+        }
         result
     }
 
-    // TODO TODO TODO: move this out of the struct cause it should ust be a helper method
-    // a dfs that is mut can be in here but the business logic should be elsewhere
-    // thats why there's returns that don't match
-    fn dfs(&mut self, target: (usize, usize)) {
+    fn dfs(&mut self) -> Result<(), String> {
+        loop {
+            let new_path_opt = self.dfs_helper(self.upper_bounds);
+            match new_path_opt {
+                Some(new_path) => {
+                    self.ordered_path = new_path.clone();
+                    self.path_set = HashSet::from_iter(new_path);
+                    break;
+                }
+                None => self.cut_in_half()?,
+            }
+        }
+        Ok(())
+    }
+
+    fn dfs_helper(&self, target: (usize, usize)) -> Option<Vec<(usize, usize)>> {
         let mut potential_new_path = self.ordered_path.clone();
-        let mut to_visit = Vec::new();
         let mut visited = HashSet::new();
 
         let depth = self.ordered_path.len();
         let starting_point = CoordWithDepth::new(self.ordered_path[depth - 1], depth);
-        to_visit.push(starting_point);
+        let initial_neighbors = self
+            .expand_search(starting_point.coord, &visited, &self.blocked)
+            .into_iter()
+            .map(|coord| CoordWithDepth::new(coord, potential_new_path.len()))
+            .collect::<Vec<_>>();
+        let mut to_visit = Vec::from_iter(initial_neighbors);
 
         while let Some(node) = to_visit.pop() {
             visited.insert(node.coord);
             potential_new_path.truncate(node.depth);
+            assert!(node.coord != potential_new_path[potential_new_path.len() - 1]);
             potential_new_path.push(node.coord);
             if node.coord == target {
                 return Some(potential_new_path);
             }
             assert!(potential_new_path.len() >= self.ordered_path.len());
             let mut neighbors = self
-                .expand_search(node.coord, &visited)
+                .expand_search(node.coord, &visited, &self.blocked)
                 .into_iter()
                 .map(|coord| CoordWithDepth::new(coord, potential_new_path.len()))
                 .collect::<Vec<_>>();
@@ -189,32 +204,47 @@ impl Path {
         &self,
         coord: (usize, usize),
         visited: &HashSet<(usize, usize)>,
+        blocked: &HashSet<(usize, usize)>,
     ) -> Vec<(usize, usize)> {
         let mut result = Vec::with_capacity(4);
 
-        if coord.0 > 0 && !visited.contains(&(coord.0 - 1, coord.1)) {
-            result.push((coord.0 - 1, coord.1));
+        let mut try_add_coord = |coord| {
+            if !visited.contains(&coord) && !blocked.contains(&coord) {
+                result.push(coord);
+            }
+        };
+
+        if coord.0 > 0 {
+            try_add_coord((coord.0 - 1, coord.1));
         }
-        if coord.1 > 0 && !visited.contains(&(coord.0, coord.1 - 1)) {
-            result.push((coord.0, coord.1 - 1));
+        if coord.1 > 0 {
+            try_add_coord((coord.0, coord.1 - 1));
         }
-        if coord.0 < self.upper_bounds.0 && !visited.contains(&(coord.0 + 1, coord.1)) {
-            result.push((coord.0 + 1, coord.1));
+        if coord.0 < self.upper_bounds.0 {
+            try_add_coord((coord.0 + 1, coord.1));
         }
-        if coord.1 < self.upper_bounds.1 && !visited.contains(&(coord.0, coord.1 + 1)) {
-            result.push((coord.0, coord.1 + 1));
+        if coord.1 < self.upper_bounds.1 {
+            try_add_coord((coord.0, coord.1 + 1));
         }
 
         result
+    }
+
+    fn block_coord(&mut self, coord: (usize, usize)) {
+        self.blocked.insert(coord);
     }
 
     fn in_path(&self, coord: &(usize, usize)) -> bool {
         self.path_set.contains(coord)
     }
 
-    fn cut_in_half(&mut self) {
+    fn cut_in_half(&mut self) -> Result<(), String> {
+        if self.ordered_path.len() <= 1 {
+            return Err("can't cut ordered path in half with length <= 1".to_string());
+        }
         let halfway_point = self.ordered_path[self.ordered_path.len() / 2].clone();
         self.cut_path(&halfway_point);
+        Ok(())
     }
 
     fn cut_path(&mut self, coord: &(usize, usize)) {
@@ -246,14 +276,44 @@ impl Puzzle for Day18 {
         }
 
         let steps = find_shortest_path(&mut grid).expect("has to find end");
-
-        println!("shortest path has {steps} steps");
     }
 
     fn puzzle_2(contents: String) {
-        let coords = coords_vec(contents);
-        while let Some(coord) = coords.iter().next() {}
+        let mut coords = coords_vec(contents).into_iter();
+        let mut path = Path::new((0, 0), (70, 70));
+        while let Some(coord) = coords.next() {
+            println!("blocking: ({}, {})", coord.0, coord.1);
+            path.block_coord(coord.clone());
+            if path.in_path(&coord) {
+                path.cut_path(&coord);
+                if let Err(reason) = path.dfs() {
+                    println!(
+                        "Failed to find a solution at coord ({},{}) due to: {reason}",
+                        coord.0, coord.1
+                    );
+                    break;
+                }
+            }
+            print_grid_from_path(path.clone());
+        }
     }
+}
+
+fn print_grid_from_path(path: Path) {
+    println!("===Start===");
+    for row_idx in 0..=path.upper_bounds.0 {
+        for col_idx in 0..=path.upper_bounds.1 {
+            let coord = (row_idx, col_idx);
+            match (path.blocked.contains(&coord), path.in_path(&coord)) {
+                (true, true) => panic!("This shouldn't happen"),
+                (false, true) => print!("O"),
+                (true, false) => print!("#"),
+                (false, false) => print!("."),
+            };
+        }
+        println!("");
+    }
+    println!("===End===");
 }
 
 fn print_grid(grid: Vec<Vec<Space>>) {
