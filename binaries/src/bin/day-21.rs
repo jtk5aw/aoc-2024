@@ -316,93 +316,82 @@ impl Puzzle for Day21 {
                     first_sequence.len(),
                     first_sequence
                 );
-                let mut sequences_to_process = Vec::new();
-                sequences_to_process.push((
-                    MemoizedKey {
-                        sequence: Vec::new(),
-                        depth: 0,
-                    },
-                    first_sequence,
-                    1,
-                ));
-                let mut memoized: HashMap<MemoizedKey, MemoizedValue> = HashMap::new();
-
-                let mut total_len = 0;
-                while let Some((parent_key, current_sequence, depth)) = sequences_to_process.pop() {
-                    let key = MemoizedKey {
-                        sequence: current_sequence.clone(),
-                        depth,
-                    };
-                    println!("key: {:?}", key);
-                    // This is for the case where you're seeing the same sequence at the same
-                    // depth again. If this happens there should be no remaining values ever cause
-                    // we're doing depth first search
-                    if let Some(memoized_value) = memoized.get(&key) {
-                        assert!(memoized_value.remaining_sub_sequences.is_none());
-                        total_len += memoized_value.total_len;
-                    }
-
-                    let to_memoize = if depth == 3 {
-                        // Updates the overall sequnce considering this node
-                        total_len += current_sequence.len();
-                        // Makes updates up the stack for all memoized values that depend on this
-                        // one
-                        let mut parent_key_to_check = parent_key.clone();
-                        println!("first parent_key_to_check: {:?}", parent_key_to_check);
-                        while let Some(parent_value) = memoized.get_mut(&parent_key_to_check) {
-                            println!("parent_value before updates: {:?}", parent_value);
-                            let remaining_sub_sequences = parent_value
-                                .remaining_sub_sequences
-                                .as_mut()
-                                .expect("has to have at least one value");
-                            // TODO TODO TODO: When I go up one level this is always going to fail
-                            // cause its still looking for the old sub sequence
-                            let position = remaining_sub_sequences
-                                .iter()
-                                .position(|sequence| *sequence == current_sequence)
-                                .expect("has to be in the list of sub sequences");
-                            remaining_sub_sequences.remove(position);
-                            parent_value.total_len += current_sequence.len();
-                            parent_key_to_check = if remaining_sub_sequences.is_empty() {
-                                println!(
-                                    "updated parent_key_to_check: {:?}",
-                                    parent_value.parent_key
-                                );
-                                parent_value.remaining_sub_sequences = None;
-                                parent_value.parent_key.clone()
-                            } else {
-                                MemoizedKey::fake_key()
-                            };
-                            println!("parent_value after updates: {:?}", parent_value);
-                        }
-                        MemoizedValue {
-                            parent_key,
-                            remaining_sub_sequences: None,
-                            total_len: current_sequence.len(),
-                        }
-                    } else {
-                        let next_sequences = split_on_activate(current_sequence)
-                            .into_iter()
-                            .map(|sequence| next_sequence(sequence))
-                            .collect::<Vec<_>>();
-                        next_sequences.iter().for_each(|sequence| {
-                            println!("will process: {:?}", sequence);
-                            sequences_to_process.push((key.clone(), sequence.clone(), depth + 1));
-                        });
-                        MemoizedValue {
-                            parent_key: parent_key.clone(),
-                            remaining_sub_sequences: Some(next_sequences),
-                            total_len: 0,
-                        }
-                    };
-                    println!("inserting key: {:?}, value: {:?}", key, to_memoize);
-                    memoized.insert(key.clone(), to_memoize);
-                }
+                let mut memoized = HashMap::new();
+                let total_len = calculate_sequence(&mut memoized, first_sequence, 1, 26);
                 println!("total_len is {total_len}");
                 num * total_len
             })
             .sum();
         println!("final sum is: {final_sum}");
+    }
+}
+
+fn calculate_sequence(
+    memoized: &mut HashMap<MemoizedKey, usize>,
+    sequence: Vec<Direction>,
+    depth: usize,
+    max_depth: usize,
+) -> usize {
+    if depth == max_depth {
+        return sequence.len();
+    }
+    let key = MemoizedKey {
+        sequence: sequence.clone(),
+        depth,
+    };
+    if let Some(memoized_value) = memoized.get(&key) {
+        println!("cache hit!");
+        return *memoized_value;
+    }
+    let next_sequence = next_sequence(sequence);
+    let result = split_on_activate(next_sequence)
+        .into_iter()
+        .map(|curr_sequence| calculate_sequence(memoized, curr_sequence, depth + 1, max_depth))
+        .sum();
+    memoized.insert(key, result);
+    result
+}
+
+fn memoize_and_bubble_up(
+    memoized: &mut HashMap<MemoizedKey, MemoizedValue>,
+    current_key: MemoizedKey,
+    to_memoize: MemoizedValue,
+) {
+    //println!("inserting key: {:?}, value: {:?}", key, to_memoize);
+    memoized.insert(current_key.clone(), to_memoize.clone());
+    if to_memoize.remaining_sub_sequences.is_some() {
+        return;
+    }
+    let mut previous_memoized_value = to_memoize.clone();
+    let mut parent_key_to_check = to_memoize.parent_key;
+    let mut sequence_to_check = current_key.sequence.clone();
+    println!("first parent_key_to_check: {:?}", parent_key_to_check);
+    while let Some(parent_memoized_value) = memoized.get_mut(&parent_key_to_check) {
+        println!("parent_key_to_check: {:?}", parent_key_to_check);
+        println!("sequence_to_check: {:?}", sequence_to_check);
+        println!("parent_value before updates: {:?}", parent_memoized_value);
+        let remaining_sub_sequences = parent_memoized_value
+            .remaining_sub_sequences
+            .as_mut()
+            .expect("has to have at least one value");
+        let position = remaining_sub_sequences
+            .iter()
+            .position(|sequence| *sequence == sequence_to_check)
+            .expect("has to be in the list of sub sequences");
+        remaining_sub_sequences.remove(position);
+
+        parent_memoized_value.total_len += previous_memoized_value.total_len;
+
+        parent_key_to_check = if remaining_sub_sequences.is_empty() {
+            //println!("updated parent_key_to_check: {:?}", parent_value.parent_key);
+            parent_memoized_value.remaining_sub_sequences = None;
+            sequence_to_check = parent_key_to_check.sequence;
+            previous_memoized_value = parent_memoized_value.clone();
+            parent_memoized_value.parent_key.clone()
+        } else {
+            MemoizedKey::fake_key()
+        };
+        println!("parent_value after updates: {:?}", parent_memoized_value);
     }
 }
 
@@ -448,4 +437,3 @@ fn main() {
 
 // 211068 is too high
 // 210392 is also too high and that swaps row and col order
-
