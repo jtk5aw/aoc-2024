@@ -352,70 +352,10 @@ fn calculate_sequence(
     result
 }
 
-fn memoize_and_bubble_up(
-    memoized: &mut HashMap<MemoizedKey, MemoizedValue>,
-    current_key: MemoizedKey,
-    to_memoize: MemoizedValue,
-) {
-    //println!("inserting key: {:?}, value: {:?}", key, to_memoize);
-    memoized.insert(current_key.clone(), to_memoize.clone());
-    if to_memoize.remaining_sub_sequences.is_some() {
-        return;
-    }
-    let mut previous_memoized_value = to_memoize.clone();
-    let mut parent_key_to_check = to_memoize.parent_key;
-    let mut sequence_to_check = current_key.sequence.clone();
-    println!("first parent_key_to_check: {:?}", parent_key_to_check);
-    while let Some(parent_memoized_value) = memoized.get_mut(&parent_key_to_check) {
-        println!("parent_key_to_check: {:?}", parent_key_to_check);
-        println!("sequence_to_check: {:?}", sequence_to_check);
-        println!("parent_value before updates: {:?}", parent_memoized_value);
-        let remaining_sub_sequences = parent_memoized_value
-            .remaining_sub_sequences
-            .as_mut()
-            .expect("has to have at least one value");
-        let position = remaining_sub_sequences
-            .iter()
-            .position(|sequence| *sequence == sequence_to_check)
-            .expect("has to be in the list of sub sequences");
-        remaining_sub_sequences.remove(position);
-
-        parent_memoized_value.total_len += previous_memoized_value.total_len;
-
-        parent_key_to_check = if remaining_sub_sequences.is_empty() {
-            //println!("updated parent_key_to_check: {:?}", parent_value.parent_key);
-            parent_memoized_value.remaining_sub_sequences = None;
-            sequence_to_check = parent_key_to_check.sequence;
-            previous_memoized_value = parent_memoized_value.clone();
-            parent_memoized_value.parent_key.clone()
-        } else {
-            MemoizedKey::fake_key()
-        };
-        println!("parent_value after updates: {:?}", parent_memoized_value);
-    }
-}
-
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
 struct MemoizedKey {
     sequence: Vec<Direction>,
     depth: usize,
-}
-
-impl MemoizedKey {
-    /// This is terrible but I'm hoping it works for now
-    fn fake_key() -> Self {
-        Self {
-            sequence: vec![Direction::Activate; 10],
-            depth: 0,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-struct MemoizedValue {
-    parent_key: MemoizedKey,
-    remaining_sub_sequences: Option<Vec<Vec<Direction>>>,
-    total_len: usize,
 }
 
 fn split_on_activate(full_sequence: Vec<Direction>) -> Vec<Vec<Direction>> {
@@ -434,6 +374,3 @@ fn split_on_activate(full_sequence: Vec<Direction>) -> Vec<Vec<Direction>> {
 fn main() {
     Day21::run();
 }
-
-// 211068 is too high
-// 210392 is also too high and that swaps row and col order
