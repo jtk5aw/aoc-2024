@@ -207,9 +207,10 @@ impl Puzzle for Day24 {
         let initial_result = run_circuit(starting_points.clone(), initial_wires.clone());
         let (x, _) = convert_to_usize('x', &initial_result);
         let (y, _) = convert_to_usize('y', &initial_result);
-        let (num, _) = convert_to_usize('z', &initial_result);
+        let (num, num_bit_vec) = convert_to_usize('z', &initial_result);
 
         let expected_num = x + y;
+        let expected_bit_vec = convert_to_bits(expected_num, num_bit_vec.len());
 
         // TODO TODO TODO: need to convert the expected num to a bitvec then find the bits that
         // aren't correct between the two and then find the gates that will fix those bits and
@@ -219,7 +220,63 @@ impl Puzzle for Day24 {
 
         println!("should be x + y = z: {x} + {y} = {}", x + y);
         println!("is actually x + y = z: {x} + {y} = {num}");
+
+        let mut idx_string = String::with_capacity(expected_bit_vec.len() * 2);
+        let mut expected_string = String::with_capacity(expected_bit_vec.len() * 2);
+        let mut actual_string = String::with_capacity(expected_bit_vec.len() * 2);
+        for (idx, (expected_bit, actual_bit)) in
+            expected_bit_vec.iter().zip(num_bit_vec.iter()).enumerate()
+        {
+            if expected_bit != actual_bit {
+                println!("the bit at {idx} doesn't match");
+            }
+            idx_string += format!("{: >3}", idx).as_str();
+            expected_string += format!("{: >3}", expected_bit).as_str();
+            actual_string += format!("{: >3}", actual_bit).as_str();
+        }
+        println!("{idx_string}");
+        println!("{expected_string}");
+        println!("{actual_string}");
     }
+}
+
+// copied from day-17
+// Claude basically wrote this function
+fn convert_to_bits(num: usize, len: usize) -> Vec<u8> {
+    // Get number of bits needed to represent the number
+    let bits_needed = if num == 0 {
+        return vec![0; len];
+    } else {
+        (usize::BITS - num.leading_zeros()) as usize
+    };
+
+    let mut bits = Vec::with_capacity(bits_needed);
+    let mut n = num;
+
+    // Extract bits from right to left
+    while n > 0 {
+        let bit = match n & 1 {
+            0 => 0,
+            1 => 1,
+            _ => panic!("this is impossible"),
+        };
+        bits.push(bit);
+        n >>= 1;
+    }
+
+    // If number was 0, push a single 0
+    if bits.is_empty() {
+        bits.push(0);
+    }
+
+    // Include leading zeros up to length
+    while bits.len() < len {
+        bits.push(1);
+    }
+    // Reverse to get most significant bits first
+    bits.reverse();
+    assert!(bits.len() == len);
+    bits
 }
 
 fn convert_to_usize(leading_char: char, result: &HashMap<String, u8>) -> (usize, VecDeque<u8>) {
