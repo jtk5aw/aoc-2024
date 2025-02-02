@@ -1,6 +1,7 @@
 use std::{
     cell::RefCell,
     collections::{HashMap, VecDeque},
+    convert,
     rc::Rc,
 };
 
@@ -8,7 +9,7 @@ use helpers::Puzzle;
 
 struct Day24;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Wire {
     name: String,
     feeds_into: Vec<Rc<RefCell<Gate>>>,
@@ -68,6 +69,76 @@ enum GateKind {
     Xor,
 }
 
+fn build_wires(contents: String) -> (VecDeque<(String, u8)>, HashMap<String, Wire>) {
+    let mut line_iter = contents.lines();
+
+    // Get starting values and initial wires
+    let mut starting_values = VecDeque::new();
+    while let Some(next_line) = line_iter.next() {
+        if next_line.is_empty() {
+            break;
+        }
+        let (name, remainder) = next_line.split_once(":").expect("has to have colon");
+        let value = remainder
+            .strip_prefix(" ")
+            .expect("has to start with blank")
+            .parse::<u8>()
+            .expect("has to be a byte");
+        starting_values.push_back((name.to_string(), value));
+    }
+
+    let wires = line_iter
+        .map(|curr_line| curr_line.split_once(" -> ").expect("has to have \" -> \""))
+        .fold(HashMap::new(), |mut wires, (input_def, output_def)| {
+            let input_split = input_def.split_whitespace().collect::<Vec<_>>();
+            if input_split.len() != 3 {
+                panic!("ran wrong");
+            }
+            let first_wire_name = input_split[0];
+            let second_wire_name = input_split[2];
+            let kind = GateKind::try_from(input_split[1]).expect("has to be an action");
+            let output_wire = Wire {
+                name: output_def.to_string(),
+                feeds_into: Vec::new(),
+            };
+
+            if let None = wires.get(output_def) {
+                wires.insert(output_def.to_string(), output_wire);
+            }
+
+            let new_gate = Gate {
+                state: ComputeState::None,
+                kind,
+                output_wire_name: output_def.to_string(),
+            };
+            let gate_ref = Rc::new(RefCell::new(new_gate));
+            println!("found gate!");
+            // println!("current_wires: {:?}", wires);
+            // println!(
+            //     "first_wire_name: {}, second_wire_name: {}",
+            //     first_wire_name, second_wire_name
+            // );
+            wires
+                .entry(first_wire_name.to_string())
+                .and_modify(|wire| wire.feeds_into.push(gate_ref.clone()))
+                .or_insert_with(|| Wire {
+                    name: first_wire_name.to_string(),
+                    feeds_into: vec![gate_ref.clone()],
+                });
+            wires
+                .entry(second_wire_name.to_string())
+                .and_modify(|wire| wire.feeds_into.push(gate_ref.clone()))
+                .or_insert_with(|| Wire {
+                    name: second_wire_name.to_string(),
+                    feeds_into: vec![gate_ref.clone()],
+                });
+
+            wires
+        });
+
+    (starting_values, wires)
+}
+
 impl GateKind {
     fn compute(&self, first_val: u8, second_val: u8) -> u8 {
         match self {
@@ -90,106 +161,81 @@ impl TryFrom<&str> for GateKind {
     }
 }
 
+fn run_circuit(
+    starting_values: VecDeque<(String, u8)>,
+    mut wires: HashMap<String, Wire>,
+) -> HashMap<String, u8> {
+    let mut to_process = starting_values;
+    let mut result = HashMap::new();
+    while let Some((name, byte)) = to_process.pop_front() {
+        result.insert(name.to_string(), byte);
+        let wire = wires
+            .remove(&name)
+            .expect("should have been able to pull the wire");
+        wire.trigger(byte)
+            .into_iter()
+            .for_each(|new_to_process| to_process.push_back(new_to_process));
+    }
+    result
+}
+
 impl Puzzle for Day24 {
     fn puzzle_1(contents: String) {
-        let mut line_iter = contents.lines();
+        let (starting_values, final_wires) = build_wires(contents);
 
-        // Get starting values and initial wires
-        let mut original_wires = HashMap::new();
-        let mut starting_values = VecDeque::new();
-        while let Some(next_line) = line_iter.next() {
-            if next_line.is_empty() {
-                break;
-            }
-            let (name, remainder) = next_line.split_once(":").expect("has to have colon");
-            let value = remainder
-                .strip_prefix(" ")
-                .expect("has to start with blank")
-                .parse::<u8>()
-                .expect("has to be a byte");
-            starting_values.push_back((name.to_string(), value));
-            original_wires.insert(
-                name.to_string(),
-                Wire {
-                    name: name.to_string(),
-                    feeds_into: Vec::new(),
-                },
-            );
-        }
-
-        let mut final_wires = line_iter
-            .map(|curr_line| curr_line.split_once(" -> ").expect("has to have \" -> \""))
-            .fold(original_wires, |mut wires, (input_def, output_def)| {
-                let input_split = input_def.split_whitespace().collect::<Vec<_>>();
-                if input_split.len() != 3 {
-                    panic!("ran wrong");
-                }
-                let first_wire_name = input_split[0];
-                let second_wire_name = input_split[2];
-                let kind = GateKind::try_from(input_split[1]).expect("has to be an action");
-                let output_wire = Wire {
-                    name: output_def.to_string(),
-                    feeds_into: Vec::new(),
-                };
-
-                assert!(wires.insert(output_def.to_string(), output_wire).is_none());
-
-                let new_gate = Gate {
-                    state: ComputeState::None,
-                    kind,
-                    output_wire_name: output_def.to_string(),
-                };
-                let gate_ref = Rc::new(RefCell::new(new_gate));
-                // TODO TODO TODO: you're not guaranteed ot see the output wire
-                // before it is used as an input. So that means these next lines will fail
-                // Try to understand if that'll be an issue. I don't think it will be I just need
-                // to add a or_insert_with
-                println!("current_wires: {:?}", wires);
-                println!(
-                    "first_wire_name: {}, second_wire_name: {}",
-                    first_wire_name, second_wire_name
-                );
-                wires
-                    .get_mut(first_wire_name)
-                    .expect("has to have already been inserted")
-                    .feeds_into
-                    .push(gate_ref.clone());
-
-                wires
-                    .get_mut(second_wire_name)
-                    .expect("has to have already been inserted")
-                    .feeds_into
-                    .push(gate_ref.clone());
-
-                wires
-            });
-
-        let mut to_process = starting_values;
-        let mut result = HashMap::new();
-        while let Some((name, byte)) = to_process.pop_front() {
-            result.insert(name.to_string(), byte);
-            let wire = final_wires
-                .remove(&name)
-                .expect("should have been able to pull the wire");
-            wire.trigger(byte)
-                .into_iter()
-                .for_each(|new_to_process| to_process.push_back(new_to_process));
-        }
+        let result = run_circuit(starting_values, final_wires);
 
         let mut keys = result.keys().collect::<Vec<_>>();
         keys.sort();
-        for key in keys {
+        for key in keys.iter() {
             println!(
                 "key:  {}, value: {}",
                 key,
-                result.get(key).expect("has to exist")
+                result.get(*key).expect("has to exist")
             );
         }
+
+        let (x, _) = convert_to_usize('x', &result);
+        let (y, _) = convert_to_usize('y', &result);
+        let (num, _) = convert_to_usize('z', &result);
+        println!("x + y = z: {x} + {y} = {num}");
     }
 
     fn puzzle_2(contents: String) {
-        todo!()
+        let (starting_points, initial_wires) = build_wires(contents);
+
+        let initial_result = run_circuit(starting_points.clone(), initial_wires.clone());
+        let (x, _) = convert_to_usize('x', &initial_result);
+        let (y, _) = convert_to_usize('y', &initial_result);
+        let (num, _) = convert_to_usize('z', &initial_result);
+
+        let expected_num = x + y;
+
+        // TODO TODO TODO: need to convert the expected num to a bitvec then find the bits that
+        // aren't correct between the two and then find the gates that will fix those bits and
+        // start flipping
+        // honestly that might be kinda dumb because flipping one gate might involve flipping two z
+        // values but it at least gives a starting point I guess
+
+        println!("should be x + y = z: {x} + {y} = {}", x + y);
+        println!("is actually x + y = z: {x} + {y} = {num}");
     }
+}
+
+fn convert_to_usize(leading_char: char, result: &HashMap<String, u8>) -> (usize, VecDeque<u8>) {
+    let mut keys = result.keys().collect::<Vec<_>>();
+    keys.sort();
+    let mut bit_vec = VecDeque::new();
+    let mut num = 0;
+    for key in keys {
+        if key.starts_with(leading_char) {
+            let byte = result.get(key).expect("has to exist");
+            num +=
+                *byte as usize * 2_usize.pow(bit_vec.len().try_into().expect("has to fit in u32"));
+            bit_vec.push_front(*result.get(key).expect("has to exist"));
+        }
+    }
+    (num, bit_vec)
 }
 
 fn main() {
