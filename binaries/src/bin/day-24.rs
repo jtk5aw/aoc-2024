@@ -12,7 +12,7 @@ struct Day24;
 struct Wire {
     name: String,
     feeds_into: Vec<Rc<RefCell<Gate>>>,
-    fed_from: Vec<Rc<RefCell<Gate>>>,
+    fed_from: Option<Rc<RefCell<Gate>>>,
 }
 
 impl Wire {
@@ -26,34 +26,28 @@ impl Wire {
                     let gate = gate_ref.borrow();
                     let new_gate_ref = cloned_gates
                         .entry(gate.output_wire_name.to_string())
-                        // .and_modify(|_| println!("cache hit!"))
                         .or_insert_with(|| Rc::new(RefCell::new(gate_ref.borrow().clone())));
                     new_gate_ref.clone()
                 })
                 .collect::<Vec<_>>(),
-            fed_from: self
-                .fed_from
-                .iter()
-                .map(|gate_ref| {
-                    let gate = gate_ref.borrow();
-                    let new_gate_ref = cloned_gates
-                        .entry(gate.output_wire_name.to_string())
-                        //.and_modify(|_| println!("cache hit!"))
-                        .or_insert_with(|| Rc::new(RefCell::new(gate_ref.borrow().clone())));
-                    new_gate_ref.clone()
-                })
-                .collect::<Vec<_>>(),
+            fed_from: self.fed_from.as_ref().map(|curr_ref| {
+                let borrow = curr_ref.borrow();
+                let entry = cloned_gates
+                    .entry(borrow.output_wire_name.clone())
+                    .or_insert_with(|| Rc::new(RefCell::new(borrow.clone())));
+                entry.clone()
+            }),
         }
     }
 }
 
 impl Wire {
-    fn trigger(self, value: u8) -> Vec<(String, u8, Gate)> {
+    fn trigger(&self, value: u8) -> Vec<(String, u8, Gate)> {
         self.feeds_into
-            .into_iter()
+            .iter()
             .flat_map(|gate_ref| {
                 let mut gate = gate_ref.borrow_mut();
-                gate.transition(value)
+                gate.transition(self.name.clone(), value)
             })
             .collect::<Vec<_>>()
     }
@@ -67,10 +61,10 @@ struct Gate {
 }
 
 impl Gate {
-    fn transition(&mut self, value: u8) -> Option<(String, u8, Gate)> {
-        self.state = self.state.clone().transition(value);
-        if let ComputeState::Both(first_val, second_val) = self.state {
-            let computed_value = self.kind.compute(first_val, second_val);
+    fn transition(&mut self, wire_name: String, value: u8) -> Option<(String, u8, Gate)> {
+        self.state = self.state.clone().transition(wire_name, value);
+        if let ComputeState::Both(first_val, second_val) = &self.state {
+            let computed_value = self.kind.compute(first_val.value, second_val.value);
             return Some((
                 self.output_wire_name.to_string(),
                 computed_value,
@@ -84,15 +78,23 @@ impl Gate {
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 enum ComputeState {
     None,
-    One(u8),
-    Both(u8, u8),
+    One(ComputeValue),
+    Both(ComputeValue, ComputeValue),
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+struct ComputeValue {
+    wire_name: String,
+    value: u8,
 }
 
 impl ComputeState {
-    fn transition(self, new_value: u8) -> Self {
+    fn transition(self, wire_name: String, value: u8) -> Self {
         match self {
-            ComputeState::None => Self::One(new_value),
-            ComputeState::One(old_value) => Self::Both(old_value, new_value),
+            ComputeState::None => Self::One(ComputeValue { wire_name, value }),
+            ComputeState::One(old_value) => {
+                Self::Both(old_value, ComputeValue { wire_name, value })
+            }
             ComputeState::Both(_, _) => panic!("already computed"),
         }
     }
@@ -115,9 +117,7 @@ impl Circuit {
     fn swap_gates(&mut self, first_gate: Gate, second_gate: Gate) {
         let mut first_gate_idx = None;
         let mut second_gate_idx = None;
-        // for gate in self.gates.iter() {
-        //     println!("gate: {:?}", gate);
-        // }
+        // Get idx's to swap for the regular gate
         for idx in 0..self.gates.len() {
             let gate = self.gates[idx].borrow();
             assert!(!(*gate == second_gate && *gate == first_gate));
@@ -128,21 +128,31 @@ impl Circuit {
                 second_gate_idx = Some(idx);
             }
         }
-        // println!(
-        //     "first_gate: {:?}, second_gate: {:?}",
-        //     first_gate, second_gate
-        // );
-        // println!("{:?}, {:?}", first_gate_idx, second_gate_idx);
+        println!(
+            "first_gate: {:?}, second_gate: {:?}",
+            first_gate, second_gate
+        );
+        println!("{:?}, {:?}", first_gate_idx, second_gate_idx);
         match (first_gate_idx, second_gate_idx) {
             (Some(first_idx), Some(second_idx)) => {
-                let mut first_to_swap = self.gates[first_idx].borrow_mut();
-                let mut second_to_swap = self.gates[second_idx].borrow_mut();
+                let first_gate_ref = self.gates[first_idx].clone();
+                let second_gate_ref = self.gates[second_idx].clone();
+
+                let mut first_to_swap = first_gate_ref.borrow_mut();
+                let mut second_to_swap = second_gate_ref.borrow_mut();
 
                 first_to_swap.output_wire_name = second_gate.output_wire_name.clone();
                 second_to_swap.output_wire_name = first_gate.output_wire_name.clone();
+
+                self.wires
+                    .entry(first_to_swap.output_wire_name.to_string())
+                    .and_modify(|wire| wire.fed_from = Some(first_gate_ref.clone()));
+                self.wires
+                    .entry(second_to_swap.output_wire_name.to_string())
+                    .and_modify(|wire| wire.fed_from = Some(second_gate_ref.clone()));
             }
             _ => panic!("failed to swap both gates"),
-        }
+        };
     }
 }
 
@@ -222,18 +232,16 @@ fn build_circuit(contents: String) -> (VecDeque<(String, u8)>, Circuit) {
                 };
                 let gate_ref = Rc::new(RefCell::new(new_gate));
                 gates.push(gate_ref.clone());
-                println!("found gate!");
 
                 // Create the output wire
-                let output_wire = Wire {
-                    name: output_def.to_string(),
-                    feeds_into: Vec::new(),
-                    fed_from: vec![gate_ref.clone()],
-                };
-
-                if let None = wires.get(output_def) {
-                    wires.insert(output_def.to_string(), output_wire);
-                }
+                wires
+                    .entry(output_def.to_string())
+                    .and_modify(|wire: &mut Wire| wire.fed_from = Some(gate_ref.clone()))
+                    .or_insert_with(|| Wire {
+                        name: output_def.to_string(),
+                        feeds_into: Vec::new(),
+                        fed_from: Some(gate_ref.clone()),
+                    });
 
                 // Create the input wires
                 wires
@@ -242,7 +250,7 @@ fn build_circuit(contents: String) -> (VecDeque<(String, u8)>, Circuit) {
                     .or_insert_with(|| Wire {
                         name: first_wire_name.to_string(),
                         feeds_into: vec![gate_ref.clone()],
-                        fed_from: vec![],
+                        fed_from: None,
                     });
                 wires
                     .entry(second_wire_name.to_string())
@@ -250,7 +258,7 @@ fn build_circuit(contents: String) -> (VecDeque<(String, u8)>, Circuit) {
                     .or_insert_with(|| Wire {
                         name: second_wire_name.to_string(),
                         feeds_into: vec![gate_ref.clone()],
-                        fed_from: vec![],
+                        fed_from: None,
                     });
 
                 (wires, gates)
@@ -264,77 +272,32 @@ fn build_circuit(contents: String) -> (VecDeque<(String, u8)>, Circuit) {
 
 struct RunResult {
     values: HashMap<String, u8>,
-    paths: HashMap<String, Path>,
 }
 
-#[derive(Debug)]
-enum Path {
-    None,
-    One(Vec<Gate>),
-    Both(Vec<Gate>, Vec<Gate>),
-}
-
-impl Path {
-    fn add(&mut self, new_path: Vec<Gate>) {
-        *self = match self {
-            Path::None => Self::One(new_path),
-            Path::One(first_path) => Self::Both(first_path.clone(), new_path),
-            Path::Both(_, _) => panic!("should never be more than two paths"),
-        }
-    }
-
-    fn set_of_gates(&self) -> HashSet<Gate> {
-        match self {
-            Path::One(vec) => HashSet::from_iter(vec.clone().into_iter()),
-            _ => panic!("shouldn't call this method for gates in this state (all output wires should only be reached once)"),
-        }
-    }
-}
-
-fn run_circuit(starting_values: VecDeque<(String, u8)>, circuit: Circuit) -> RunResult {
-    let mut wires = circuit.wires;
-    let mut to_process = starting_values
-        .into_iter()
-        .map(|(name, starting_byte)| (name, starting_byte, Vec::new()))
-        .collect::<VecDeque<_>>();
+fn run_circuit(starting_values: VecDeque<(String, u8)>, circuit: &Circuit) -> RunResult {
+    let wires = &circuit.wires;
+    let mut to_process = starting_values;
     let mut values = HashMap::new();
-    let mut paths = HashMap::new();
-    while let Some((name, byte, path)) = to_process.pop_front() {
+    while let Some((name, byte)) = to_process.pop_front() {
         values.insert(name.to_string(), byte);
         let wire = wires
-            .remove(&name)
+            .get(&name)
             .expect("should have been able to pull the wire");
         wire.trigger(byte)
             .into_iter()
-            .for_each(|(new_wire_name, new_val, gate)| {
-                let mut new_path = path.clone();
-                new_path.push(gate);
-                let paths_entry = paths
-                    .entry(new_wire_name.to_string())
-                    .or_insert_with(|| Path::None);
-                paths_entry.add(new_path.clone());
-                to_process.push_back((new_wire_name, new_val, new_path))
+            .for_each(|(new_wire_name, new_val, _gate)| {
+                to_process.push_back((new_wire_name, new_val))
             });
     }
-    RunResult { values, paths }
+    RunResult { values }
 }
 
 impl Puzzle for Day24 {
     fn puzzle_1(contents: String) {
         let (starting_values, final_circuit) = build_circuit(contents);
 
-        let run_result = run_circuit(starting_values, final_circuit);
+        let run_result = run_circuit(starting_values, &final_circuit);
         let result_values = run_result.values;
-
-        let mut keys = result_values.keys().collect::<Vec<_>>();
-        keys.sort();
-        for key in keys.iter() {
-            println!(
-                "key:  {}, value: {}",
-                key,
-                result_values.get(*key).expect("has to exist")
-            );
-        }
 
         let (x, _) = convert_to_usize('x', &result_values);
         let (y, _) = convert_to_usize('y', &result_values);
@@ -345,21 +308,52 @@ impl Puzzle for Day24 {
     fn puzzle_2(contents: String) {
         let (starting_points, initial_circuit) = build_circuit(contents);
 
-        let initial_run_result = run_circuit(starting_points.clone(), initial_circuit.clone());
-        let initial_result_values = initial_run_result.values;
-        let (x, _) = convert_to_usize('x', &initial_result_values);
+        let mut first_circuit = initial_circuit.clone();
+        // Most of these swaps were found by using the get_circuit_paths function on the output
+        // bits that were incorrect. Would go through one by one and find where the structure
+        // differed from a single bit adder (this wiki page: https://en.wikipedia.org/wiki/Adder_(electronics)
+        // in the full-adder section)
+        // TL;DR the program won't find the solution to any input. This only works for MY input
+        let swaps = vec![
+            (
+                (GateKind::Xor, "rpv".to_string()),
+                (GateKind::And, "z11".to_string()),
+            ),
+            (
+                (GateKind::Xor, "rpb".to_string()),
+                (GateKind::And, "ctg".to_string()),
+            ),
+            (
+                (GateKind::Xor, "dmh".to_string()),
+                (GateKind::And, "z31".to_string()),
+            ),
+            (
+                (GateKind::Xor, "dvq".to_string()),
+                (GateKind::Or, "z38".to_string()),
+            ),
+        ];
+        swaps.iter().for_each(|(first_params, second_params)| {
+            first_circuit.swap_gates(
+                Gate {
+                    state: ComputeState::None,
+                    kind: first_params.0.clone(),
+                    output_wire_name: first_params.1.clone(),
+                },
+                Gate {
+                    state: ComputeState::None,
+                    kind: second_params.0.clone(),
+                    output_wire_name: second_params.1.clone(),
+                },
+            )
+        });
+
+        let circuit_with_swaps = first_circuit.clone();
+
+        let first_run_result = run_circuit(starting_points.clone(), &first_circuit);
+        let initial_result_values = first_run_result.values;
+        let (x, x_bit_vec) = convert_to_usize('x', &initial_result_values);
         let (y, _) = convert_to_usize('y', &initial_result_values);
         let (num, num_bit_vec) = convert_to_usize('z', &initial_result_values);
-
-        let mut keys = initial_result_values.keys().collect::<Vec<_>>();
-        keys.sort();
-        for key in keys.iter() {
-            println!(
-                "key:  {}, value: {}",
-                key,
-                initial_result_values.get(*key).expect("has to exist")
-            );
-        }
 
         let expected_num = x + y;
         println!("expected_num: {expected_num}, num: {num}");
@@ -368,105 +362,283 @@ impl Puzzle for Day24 {
         println!("should be x + y = z: {x} + {y} = {}", x + y);
         println!("is actually x + y = z: {x} + {y} = {num}");
 
+        let (idx_string, expected_string, actual_string, _wrong_output_wires) =
+            diff_bit_vecs(expected_bit_vec.clone(), num_bit_vec.into());
+        println!("{idx_string}");
+        println!("{expected_string}");
+        println!("{actual_string}");
+
+        let circuit_paths = get_circuit_paths(
+            vec!["z03".to_string()],
+            //wrong_output_wires[3..4].to_vec(),
+            &first_circuit,
+        );
+        let mut iter = circuit_paths.into_iter().enumerate();
+
+        while let Some((idx, current_level)) = iter.next() {
+            println!("===== LEVEL {idx} ======");
+            for wire_gates in current_level {
+                println!("== NEW WIRE ==");
+                for gate in wire_gates {
+                    print_gate(&gate.borrow());
+                }
+            }
+        }
+
+        let mut result = swaps
+            .into_iter()
+            .flat_map(|((_, name_1), (_, name_2))| vec![name_1, name_2])
+            .collect::<Vec<_>>();
+        result.sort();
+        let final_str = result.join(",");
+        println!("the answer is {final_str}");
+
+        let bit_vec_len = x_bit_vec.len();
+
+        let mut new_x = 1;
+        let mut new_y = 1;
+        while new_x < x {
+            let x_starting_points = convert_num_to_starting_points('x', new_x, bit_vec_len);
+            while new_y < y {
+                let y_starting_points = convert_num_to_starting_points('y', new_y, bit_vec_len);
+                compare(
+                    circuit_with_swaps.clone(),
+                    new_x,
+                    new_y,
+                    x_starting_points.clone(),
+                    y_starting_points,
+                );
+                new_y <<= 1;
+            }
+            new_y = 1;
+            new_x <<= 1;
+        }
+
+        // This takes way way way too long
+        // for x_num in 0..=x {
+        //     let x_starting_points = convert_num_to_starting_points('x', x_num, bit_vec_len);
+        //     for y_num in 0..=y {
+        //         let y_starting_points = convert_num_to_starting_points('y', y_num, bit_vec_len);
+        //         compare(
+        //             circuit_with_swaps.clone(),
+        //             x_num,
+        //             y_num,
+        //             x_starting_points.clone(),
+        //             y_starting_points,
+        //         );
+        //     }
+        // }
+    }
+}
+
+fn convert_num_to_starting_points(leading_char: char, num: usize, len: usize) -> Vec<(String, u8)> {
+    let bit_vec = convert_to_bits(num, len);
+    //println!("{:?}", x_bit_vec);
+    bit_vec
+        .into_iter()
+        .enumerate()
+        .map(|(idx, bit_val)| (format!("{leading_char}{:0>2}", len - idx - 1), bit_val))
+        .collect::<Vec<_>>()
+}
+
+fn compare(
+    circuit: Circuit,
+    x_num: usize,
+    y_num: usize,
+    x_starting_points: Vec<(String, u8)>,
+    y_starting_points: Vec<(String, u8)>,
+) {
+    let mut current_starting_points =
+        VecDeque::with_capacity(x_starting_points.len() + y_starting_points.len());
+    current_starting_points.extend(x_starting_points.clone());
+    current_starting_points.extend(y_starting_points.clone());
+
+    let run_result = run_circuit(current_starting_points, &circuit);
+
+    let expected_num = x_num + y_num;
+    let (x, x_num_bit_vec) = convert_to_usize('x', &run_result.values);
+    let (y, y_num_bit_vec) = convert_to_usize('y', &run_result.values);
+    assert!(x == x_num);
+    assert!(y == y_num);
+    let (num, num_bit_vec) = convert_to_usize('z', &run_result.values);
+    let expected_bit_vec = convert_to_bits(expected_num, num_bit_vec.len());
+    println!("(actual) {num} == (expected) {expected_num}");
+    if expected_num != num {
+        println!("x : expected {x_num} actual {x}");
+        println!("{:?}", x_num_bit_vec);
+        println!("y : expected {y_num} actual {y}");
+        println!("{:?}", y_num_bit_vec);
         let (idx_string, expected_string, actual_string, wrong_output_wires) =
             diff_bit_vecs(expected_bit_vec.clone(), num_bit_vec.into());
         println!("{idx_string}");
         println!("{expected_string}");
         println!("{actual_string}");
 
-        let mut sets_to_chose_from = Vec::new();
-        let mut total_num_gates = 0;
-        for wire_name in wrong_output_wires.clone() {
-            let paths = initial_run_result
-                .paths
-                .get(&wire_name)
-                .expect("has to exist");
-            println!("paths: {:?}", paths);
-            let set_of_gates = paths.set_of_gates();
-            total_num_gates += set_of_gates.len();
-            sets_to_chose_from.push(set_of_gates);
-        }
+        // Added the z38 here because it was helpful for debugging this final miss
+        let mut to_check = wrong_output_wires[1..2].to_vec();
+        to_check.push("z38".to_string());
+        let circuit_paths = get_circuit_paths(to_check, &circuit);
+        let mut iter = circuit_paths.into_iter().enumerate();
 
-        println!(
-            "sets_to_chose_from: {}, total_num_gates: {total_num_gates}, ",
-            sets_to_chose_from.len(),
-        );
-
-        let potential_swaps = generate_potential_swaps(sets_to_chose_from);
-        println!("{:?}", potential_swaps);
-        println!("found {} potential_swaps", potential_swaps.len());
-
-        let mut min_wrong = wrong_output_wires.len();
-        println!("min wrong: {min_wrong}");
-        // TODO TODO TODO: Right now I'm only doing one swap at a time I need to do 4 at a time
-        // but this mega for loop just won't work (duh)
-        // So what needs to be done is trim the set of potential swaps.
-        // a Swap could only possibly solve the problem if there is a change in every single
-        // potential path. There are 12 wrong paths to start. That means that some of the swaps
-        // HAVE to have an effect on multiple output bits. Need to only consider swaps that meet
-        // these criteria
-        let mut idx = 0;
-        for first_swap_idx in 0..potential_swaps.len() {
-            let first_swap = potential_swaps[first_swap_idx].clone();
-            for second_swap_idx in first_swap_idx..potential_swaps.len() {
-                let second_swap = potential_swaps[first_swap_idx].clone();
-                for third_swap_idx in second_swap_idx..potential_swaps.len() {
-                    let third_swap = potential_swaps[first_swap_idx].clone();
-                    for fourth_swap_idx in third_swap_idx..potential_swaps.len() {
-                        panic!("testing other stuff");
-                        let fourth_swap = potential_swaps[first_swap_idx].clone();
-                        println!("attempt {idx}");
-                        let mut new_circuit = initial_circuit.clone();
-                        new_circuit.swap_gates(first_swap.0.clone(), first_swap.1.clone());
-                        new_circuit.swap_gates(second_swap.0.clone(), second_swap.1.clone());
-                        new_circuit.swap_gates(third_swap.0.clone(), third_swap.1.clone());
-                        new_circuit.swap_gates(fourth_swap.0.clone(), fourth_swap.1.clone());
-                        let run_result = run_circuit(starting_points.clone(), new_circuit);
-                        let (new_num, new_bit_vec) = convert_to_usize('z', &run_result.values);
-                        println!("produced: {new_num}");
-                        let (_, _, _, wrong_output_wires) =
-                            diff_bit_vecs(expected_bit_vec.clone(), new_bit_vec.into());
-                        if wrong_output_wires.len() < min_wrong {
-                            println!("found new min!");
-                            println!("num_wrong: {}", wrong_output_wires.len());
-                            min_wrong = wrong_output_wires.len()
-                        }
-
-                        if new_num == expected_num {
-                            println!("found!!!!!");
-                            break;
-                        }
-                        idx += 1;
-                    }
+        while let Some((idx, current_level)) = iter.next() {
+            // Generally if there's been an issue it has to be lower than this
+            if idx == 6 {
+                break;
+            }
+            println!("===== LEVEL {idx} ======");
+            for wire_gates in current_level {
+                println!("== NEW WIRE ==");
+                for gate in wire_gates {
+                    print_gate(&gate.borrow());
                 }
             }
+        }
+
+        println!("mismatch!");
+        panic!();
+    } else {
+        println!("fine!");
+    }
+}
+
+fn get_circuit_paths(wrong_output_wires: Vec<String>, circuit: &Circuit) -> CircuitPaths {
+    let mut bad_gates = HashSet::new();
+
+    let paths = wrong_output_wires
+        .into_iter()
+        .map(|root_wire| {
+            let mut result = Vec::new();
+            let first_level = circuit.wires.get(&root_wire).unwrap();
+            result.push(vec![first_level.fed_from.as_ref().unwrap().clone()]);
+            loop {
+                let previous_level = result.last().expect("has to have a last");
+                let next_level = previous_level
+                    .iter()
+                    .flat_map(|gate_ref| {
+                        let gate = gate_ref.borrow();
+                        match &gate.state {
+                            ComputeState::Both(compute_value, compute_value1) => {
+                                let first_wire =
+                                    circuit.wires.get(&compute_value.wire_name).unwrap();
+                                let second_wire =
+                                    circuit.wires.get(&compute_value1.wire_name).unwrap();
+                                match (first_wire.fed_from.as_ref(), second_wire.fed_from.as_ref())
+                                {
+                                    (Some(first_gate_ref), Some(second_gate_ref)) => {
+                                        let first_gate = first_gate_ref.borrow();
+                                        let second_gate = second_gate_ref.borrow();
+                                        if bad_transition(&first_gate, &gate) {
+                                            bad_gates.insert((first_gate.clone(), gate.clone()));
+                                        }
+                                        if bad_transition(&second_gate, &gate) {
+                                            bad_gates.insert((second_gate.clone(), gate.clone()));
+                                        }
+                                        Some(vec![first_gate_ref.clone(), second_gate_ref.clone()])
+                                    }
+                                    (None, None) => {
+                                        if matches!(gate.kind, GateKind::Or) {
+                                            panic!("This is just a placeholder");
+                                        }
+                                        None
+                                    }
+                                    _ => panic!("This shouldn't happen"),
+                                }
+                            }
+                            _ => panic!("This shouldn't happen"),
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                if next_level.is_empty() {
+                    break;
+                }
+                let flattened = next_level.into_iter().flatten().collect::<Vec<_>>();
+                result.push(flattened);
+            }
+            result
+        })
+        .collect::<Vec<_>>();
+
+    println!("BAD_GATES: len({})", bad_gates.len());
+    for gate in bad_gates {
+        println!(
+            "start: {:?} {}, end: {:?} {}",
+            gate.0.kind, gate.0.output_wire_name, gate.1.kind, gate.1.output_wire_name
+        );
+        println!("{:?}", gate);
+    }
+
+    CircuitPaths::new(paths)
+}
+
+fn bad_transition(start_gate: &Gate, end_gate: &Gate) -> bool {
+    match (&start_gate.kind, &end_gate.kind) {
+        (GateKind::And, GateKind::Xor) => true,
+        (GateKind::Or, GateKind::Or) => true,
+        (GateKind::Xor, GateKind::Or) => true,
+        _ => false,
+    }
+}
+
+struct CircuitPaths {
+    paths: Vec<Vec<Vec<Rc<RefCell<Gate>>>>>,
+}
+
+impl CircuitPaths {
+    fn new(paths: Vec<Vec<Vec<Rc<RefCell<Gate>>>>>) -> Self {
+        Self { paths }
+    }
+}
+
+struct CircuitPathsIterator<'a> {
+    idx: usize,
+    paths: &'a Vec<Vec<Vec<Rc<RefCell<Gate>>>>>,
+}
+
+impl<'a> IntoIterator for &'a CircuitPaths {
+    type Item = Vec<&'a Vec<Rc<RefCell<Gate>>>>;
+    type IntoIter = CircuitPathsIterator<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        CircuitPathsIterator {
+            idx: 0,
+            paths: &self.paths,
         }
     }
 }
 
-fn generate_potential_swaps(sets_to_chose_from: Vec<HashSet<Gate>>) -> Vec<(Gate, Gate)> {
-    let mut result = Vec::new();
-    for idx_1 in 0..sets_to_chose_from.len() {
-        for idx_2 in idx_1..sets_to_chose_from.len() {
-            let set_1 = sets_to_chose_from[idx_1].clone();
-            let set_2 = sets_to_chose_from[idx_2].clone();
+impl<'a> Iterator for CircuitPathsIterator<'a> {
+    type Item = Vec<&'a Vec<Rc<RefCell<Gate>>>>;
 
-            let intersection = set_1.intersection(&set_2).collect::<HashSet<_>>();
+    fn next(&mut self) -> Option<Self::Item> {
+        let remaining_with_value = self
+            .paths
+            .iter()
+            .flat_map(|wire_path| wire_path.get(self.idx))
+            .collect::<Vec<_>>();
 
-            for set_1_val in set_1.iter() {
-                for set_2_val in set_2.iter() {
-                    if !intersection.contains(&set_1_val) && !intersection.contains(&set_2_val) {
-                        let mut new_set_1_val = set_1_val.clone();
-                        new_set_1_val.state = ComputeState::None;
-                        let mut new_set_2_val = set_2_val.clone();
-                        new_set_2_val.state = ComputeState::None;
-                        result.push((new_set_1_val, new_set_2_val));
-                    }
-                }
-            }
+        self.idx += 1;
+
+        if remaining_with_value.is_empty() {
+            None
+        } else {
+            Some(remaining_with_value)
         }
     }
-    result
+}
+
+fn print_gate(gate: &Gate) {
+    match &gate.state {
+        ComputeState::Both(compute_value, compute_value1) => println!(
+            "{} ({}) {:?} {} ({}) -> {}",
+            compute_value.value,
+            compute_value.wire_name,
+            gate.kind,
+            compute_value1.value,
+            compute_value1.wire_name,
+            gate.output_wire_name
+        ),
+        _ => panic!("has to be in a both state"),
+    }
 }
 
 fn diff_bit_vecs(
@@ -484,7 +656,7 @@ fn diff_bit_vecs(
     {
         if expected_bit != actual_bit {
             let wrong_wire_name = format!("z{:0>2}", actual_bit_vec.len() - idx);
-            //println!("the bit at {idx} ({wrong_wire_name}) doesn't match",);
+            println!("the bit at {idx} ({wrong_wire_name}) doesn't match",);
             wrong_output_wires.push(wrong_wire_name);
         }
         idx_string += format!("{: >2}", idx).as_str();
@@ -530,11 +702,11 @@ fn convert_to_bits(num: usize, len: usize) -> Vec<u8> {
 
     // Include leading zeros up to length
     while bits.len() < len {
-        bits.push(1);
+        bits.push(0);
     }
     // Reverse to get most significant bits first
     bits.reverse();
-    println!("bits.len(): {}, len: {len}", bits.len());
+    //println!("bits.len(): {}, len: {len}", bits.len());
     assert!(bits.len() == len);
     bits
 }
